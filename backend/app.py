@@ -742,7 +742,12 @@ async def term_ws(ws: WebSocket, sid: str):
     except Exception:
         pass
     try:
-        await ws.close()
+        # We reached here only after a connection was established, so any close now is a transient
+        # drop (container restart/recreate, backend redeploy, upstream ttyd gone). Close with 1001
+        # ("going away") rather than the default 1000 ("normal"): ttyd's client auto-reconnects on a
+        # non-1000 close, but on a clean 1000 it stops and nags "Press ⏎ to Reconnect". The early
+        # returns above keep 1000 on purpose (no container / unauthorized) so they don't loop.
+        await ws.close(code=1001)
     except Exception:
         pass
 
