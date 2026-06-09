@@ -107,7 +107,6 @@
   #ctxSize .ic{font-size:11px;opacity:.8}
   #ctxSize:hover{border-color:var(--accent);color:var(--txt)}
   #ctxSize:empty{display:none}
-  #tooltog{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:14px;padding:2px 8px;cursor:pointer}
   #termtog{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:14px;padding:2px 8px;cursor:pointer}
   #vscodeBtn{background:none;border:1px solid var(--line);border-radius:6px;padding:3px 7px;cursor:pointer;display:inline-flex;align-items:center}
   #vscodeBtn:hover{border-color:var(--accent)}
@@ -130,7 +129,7 @@
   #ctxtog{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:14px;padding:2px 8px;cursor:pointer}
   #ctxtog.on{color:var(--ok);border-color:var(--ok)}
   /* collected into the ⋯ menu — keep in DOM (handlers/state) but hidden in the header */
-  #power,#vscodeBtn,#ctxtog,#termtog,#setBtn,#powerMsg{display:none!important}
+  #power,#vscodeBtn,#ctxtog,#setBtn,#powerMsg{display:none!important}
   #menuWrap{position:relative;flex:none}
   #menuBtn{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:16px;line-height:1;padding:3px 9px;cursor:pointer}
   #menuBtn:hover{color:var(--txt);background:var(--hover)}
@@ -162,7 +161,6 @@
   #contextView .cv-md{border:1px solid var(--line);border-radius:8px;padding:14px 18px;background:var(--panel);font-size:14px}
   #contextView .cv-layer .empty{color:var(--muted);font-style:italic;font-size:12px}
   #installBtn{background:var(--accent);border:1px solid var(--accent);color:var(--on-accent);border-radius:6px;font-size:12px;font-weight:600;padding:3px 10px;cursor:pointer}
-  #tooltog.on{color:var(--accent);border-color:var(--accent)}
   body.hide-tools .tool,body.hide-tools .toolresult{display:none}
   #status{font-size:11px;color:var(--muted)}
   #log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
@@ -446,7 +444,6 @@
       <button id="vscodeBtn" title="Open in VS Code (Remote-SSH)"><svg viewBox="0 0 256 254" width="16" height="16" aria-hidden="true"><path fill="#0065A9" d="M181.534 254.252a16.01 16.01 0 0 0 12.754-.49l52.97-25.477A16 16 0 0 0 256 213.84V40.16a16 16 0 0 0-8.742-14.246L194.288.438a16.01 16.01 0 0 0-18.267 3.105L74.196 96.553 29.768 62.834a10.68 10.68 0 0 0-13.643.606L1.94 76.357c-2.586 2.353-2.583 6.43.006 8.78L40.5 120.43 1.946 155.72c-2.59 2.35-2.592 6.427-.006 8.78l14.185 12.917a10.68 10.68 0 0 0 13.643.606l44.428-33.72 101.825 93.011a16 16 0 0 0 5.513 3.938zm10.305-184.83L114.566 128l77.273 58.578z"/></svg></button>
       <button id="ctxtog" title="View context (Global / User / Chat / Wiki)">📄</button>
       <button id="termtog" title="Terminal mode">⌨</button>
-      <button id="tooltog" title="Show tool calls">🔧</button>
       <button id="setBtn" title="Settings">⚙</button>
       <div id="menuWrap">
         <button id="menuBtn" title="Menu">⋯</button>
@@ -1308,19 +1305,10 @@ $('burger').onclick=()=>{
 scrim.onclick=closeDrawer;
 if(localStorage.getItem('navCollapsed')==='1' && !isMobile()) document.body.classList.add('nav-collapsed');
 
-// ---------- tool-calls visibility toggle (header) — default: tools shown
-const tooltog=$('tooltog');
-function applyToolVis(){
-  const show=localStorage.getItem('hideTools')!=='1';
-  document.body.classList.toggle('hide-tools',!show);
-  tooltog.classList.toggle('on',show);
-  tooltog.title=show?'Hide tool calls':'Show tool calls';
-}
-tooltog.onclick=()=>{
-  const nowHidden=localStorage.getItem('hideTools')==='1';
-  localStorage.setItem('hideTools',nowHidden?'0':'1');
-  applyToolVis();
-};
+// ---------- tool-calls visibility toggle (in the ⋯ menu) — default: tools shown
+function toolsShown(){ return localStorage.getItem('hideTools')!=='1'; }
+function applyToolVis(){ document.body.classList.toggle('hide-tools',!toolsShown()); }
+function toggleToolVis(){ localStorage.setItem('hideTools', toolsShown()?'1':'0'); applyToolVis(); }
 applyToolVis();
 
 // ---------- themes (named, persisted) — picked in Settings → Appearance
@@ -1463,11 +1451,10 @@ $('ctxClose').onclick=closeContext;
 // ---------- header overflow menu (⋯): terminal / container / VS Code / context / settings
 function buildMenu(){
   const has=!!cur;
-  const termOn=document.body.classList.contains('split-term');
   const ctxOn=document.body.classList.contains('ctx-mode');
   const running=has && statusMap[cur.id]==='running';
   const items=[
-    {ic:'⌨', label:'Terminal mode', hint:termOn?'on':'', need:true, act:()=>$('termtog').click()},
+    {ic:'🔧', label:'Tool calls', hint:toolsShown()?'on':'', need:false, act:()=>toggleToolVis()},
     running ? {ic:'↻', label:'Restart container', need:true, act:()=>restartContainer()}
             : {ic:'●', label:'Start container', need:true, act:()=>$('power').click()},
     {ic:'⧉', label:'Open in VS Code', need:true, act:()=>$('vscodeBtn').click()},
