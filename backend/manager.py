@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +29,9 @@ HOST_WORK_ROOT = os.environ.get("HOST_WORK_ROOT", "/srv/vivarium/work")
 # Where that same host dir is mounted INSIDE the ccchat container (so we can read JSONL).
 LOCAL_WORK_ROOT = Path(os.environ.get("LOCAL_WORK_ROOT", "/work"))
 SESSION_IMAGE = os.environ.get("SESSION_IMAGE", "claude-term:local")
+# An OAuth access token with less than this left is treated as "stale" everywhere (seed minting,
+# session reseeding, pre-launch warm-up) — keep the three in agreement or the 401 race returns.
+FRESH_MARGIN_MS = 30 * 60 * 1000
 # Session containers join a DEDICATED network (not the shared `web`) so they have internet egress
 # but cannot reach the host's internal services (Caddy, Grafana, prod apps) or other users' sessions
 # beyond ttyd (which is auth'd). ccchat itself must also be attached to this net to proxy ttyd.
@@ -122,12 +126,25 @@ def ttyd_credential(sid: str):
 class Manager:
     def __init__(self):
         self._cli_versions = {}   # image id -> Claude CLI version (exec'd once per image)
+        # Per-container locks serialising lifecycle ops (start/stop/recreate). Endpoints run in the
+        # FastAPI threadpool and the chat/terminal websockets can call ensure_running concurrently
+        # with an in-flight /restart or /recreate — without this, two threads interleave
+        # `docker rm -f` + `docker run` on the same --name (one run silently fails, or the rm
+        # deletes the container the other just created). RLock: recreate_container/ensure_running
+        # nest onto _start_container under the same lock.
+        self._oplocks: dict = {}
+        self._oplocks_guard = threading.Lock()
         # backfill the per-user id->name index for any sessions that predate this feature
         try:
             for key in _load().keys():
                 self._write_session_index(key)
         except Exception:
             pass
+
+    def _oplock(self, sess: dict) -> threading.RLock:
+        """The lifecycle lock for this session's container (created on first use)."""
+        with self._oplocks_guard:
+            return self._oplocks.setdefault(sess["container"], threading.RLock())
 
     def list(self, email: str) -> list:
         d = _load()
@@ -189,13 +206,10 @@ class Manager:
         """Refresh the per-user seed's access token by running a throwaway `claude -p ok` with that
         seed as HOME (Claude refreshes using the seed's refresh token)."""
         cred = self._user_seed_local(slug) / ".credentials.json"
-        try:
-            oauth = json.loads(cred.read_text()).get("claudeAiOauth", {})
-            if (only_if_stale and oauth.get("accessToken")
-                    and oauth.get("expiresAt", 0) - time.time() * 1000 > 30 * 60 * 1000):
-                return
-        except Exception:
-            pass
+        oauth = self._oauth_block(cred)
+        if (only_if_stale and oauth.get("accessToken")
+                and oauth.get("expiresAt", 0) - time.time() * 1000 > FRESH_MARGIN_MS):
+            return
         _docker("run", "--rm", "-e", "IS_SANDBOX=1",
                 "-v", f"{self._user_seed_host(slug)}:/root/.claude", "-w", "/root", SESSION_IMAGE,
                 "claude", "-p", "ok", "--dangerously-skip-permissions", timeout=120)
@@ -382,14 +396,15 @@ class Manager:
         return "running" if r.stdout.strip() == "true" else "stopped"
 
     def ensure_running(self, sess: dict) -> bool:
-        st = self.status(sess)
-        if st == "missing":
-            self._start_container(sess)
-        elif st == "stopped":
-            _docker("start", sess["container"])
-        self.ensure_claude(sess)
-        self.ensure_ttyd(sess)
-        return True
+        with self._oplock(sess):
+            st = self.status(sess)
+            if st == "missing":
+                self._start_container(sess)
+            elif st == "stopped":
+                _docker("start", sess["container"])
+            self.ensure_claude(sess)
+            self.ensure_ttyd(sess)
+            return True
 
     # xterm themes matching the chat UI (Claude Code palette), set at ttyd launch
     _TTYD_THEME = {
@@ -433,32 +448,38 @@ class Manager:
         return (r.stdout or "").strip()
 
     def stop_container(self, sess: dict):
-        _docker("stop", sess["container"])
+        with self._oplock(sess):
+            _docker("stop", sess["container"])
 
     def version_info(self, sess: dict) -> dict:
         """Claude CLI version of the session container + whether it was created from the current
         SESSION_IMAGE. 'current' compares image IDs, not CLI versions — an image rebuild with the
-        same CLI (env/config changes) still counts as outdated."""
-        r = _docker("inspect", "-f", "{{.Image}}", sess["container"])
-        if r.returncode != 0:
-            return {"cli": None, "current": None}     # container missing — nothing to compare
-        cimg = r.stdout.strip()
-        ri = _docker("image", "inspect", "-f", "{{.Id}}", SESSION_IMAGE)
-        cur_img = ri.stdout.strip() if ri.returncode == 0 else None
-        cli = self._cli_versions.get(cimg)
-        if cli is None and self.status(sess) == "running":
-            rv = _docker("exec", sess["container"], "claude", "--version")
-            if rv.returncode == 0 and rv.stdout.strip():
-                cli = rv.stdout.strip().split()[0]
-                self._cli_versions[cimg] = cli
-        return {"cli": cli, "current": (cimg == cur_img) if cur_img else None}
+        same CLI (env/config changes) still counts as outdated. Never raises: this sits on the
+        session-open hot path, and a wedged container must not 500 it or pin a worker for long."""
+        try:
+            r = _docker("inspect", "-f", "{{.Image}} {{.State.Running}}", sess["container"], timeout=10)
+            if r.returncode != 0:
+                return {"cli": None, "current": None}     # container missing — nothing to compare
+            cimg, _, running = r.stdout.strip().partition(" ")
+            ri = _docker("image", "inspect", "-f", "{{.Id}}", SESSION_IMAGE, timeout=10)
+            cur_img = ri.stdout.strip() if ri.returncode == 0 else None
+            cli = self._cli_versions.get(cimg)
+            if cli is None and running == "true":
+                rv = _docker("exec", sess["container"], "claude", "--version", timeout=10)
+                if rv.returncode == 0 and rv.stdout.strip():
+                    cli = rv.stdout.strip().split()[0]
+                    self._cli_versions[cimg] = cli
+            return {"cli": cli, "current": (cimg == cur_img) if cur_img else None}
+        except Exception:
+            return {"cli": None, "current": None}
 
     def recreate_container(self, sess: dict):
         """Tear down the container and re-run it from the current SESSION_IMAGE (workspace,
         transcript and credentials persist on the bind mounts). Blocks until claude is ready."""
-        self._start_container(sess)   # does rm -f first
-        self.ensure_claude(sess)
-        self.ensure_ttyd(sess)
+        with self._oplock(sess):
+            self._start_container(sess)   # does rm -f first
+            self.ensure_claude(sess)
+            self.ensure_ttyd(sess)
 
     # ---- context (md layers) -------------------------------------------------
     def _ctx_paths(self, sess: dict):
@@ -588,14 +609,10 @@ class Manager:
                 return False
             dst = self.local_ws(sess) / ".chome" / ".credentials.json"
             if only_if_stale and dst.exists():
-                try:
-                    exp = json.loads(dst.read_text()).get("claudeAiOauth", {}).get("expiresAt", 0)
-                    # still valid for >30 min -> leave it (session is topped up from the seed,
-                    # it has no refresh token of its own so it cannot refresh)
-                    if exp - time.time() * 1000 > 30 * 60 * 1000:
-                        return False
-                except Exception:
-                    pass
+                # still fresh -> leave it (session is topped up from the seed; its own copy has no
+                # refresh token so it cannot refresh)
+                if self._oauth_block(dst).get("expiresAt", 0) - time.time() * 1000 > FRESH_MARGIN_MS:
+                    return False
             dst.parent.mkdir(parents=True, exist_ok=True)
             # Strip the refresh token from the session copy: a session must NEVER refresh on its own
             # (that would rotate the user's seed token out from under their other sessions). Sessions
@@ -608,21 +625,31 @@ class Manager:
         except Exception:
             return False
 
+    @staticmethod
+    def _oauth_block(path) -> dict:
+        """The claudeAiOauth block of a .credentials.json ({} on any error)."""
+        try:
+            return json.loads(Path(path).read_text()).get("claudeAiOauth", {}) or {}
+        except Exception:
+            return {}
+
     def _warm_auth(self, sess: dict):
         """Force any pending OAuth access-token refresh BEFORE the interactive claude launches and
-        the user sends msg #1. A freshly (re)created container can otherwise race the auto-refresh
-        and 401 on the first request — which needlessly tempts a /login. We make one cheap,
-        NON-persisted print-mode call (no session is written, so the interactive `-c` continue is
-        unaffected) and only when the stored access token is at/near expiry; sessions on a bare env
-        token or a still-fresh token need nothing. Runs while no interactive claude is up yet, so
+        the user sends msg #1 (a fresh container can race the auto-refresh and 401 the first
+        request, tempting a needless /login). One cheap NON-persisted print-mode call (no session
+        is written, so the interactive `-c` continue is unaffected). Only useful for credentials
+        that can actually self-refresh — i.e. a .credentials.json that KEPT its refreshToken
+        (.self_managed sessions / an in-container /login). Seed-managed copies have the refresh
+        token stripped (see reseed_creds) and are topped up by the seed instead, and env-token
+        sessions have no cred file: both skip. Runs while no interactive claude is up yet, so
         there's no refresh-rotation race. Best-effort: never blocks or fails the launch."""
         try:
             cred = self.local_ws(sess) / ".chome" / ".credentials.json"
-            if not cred.exists():
-                return                              # env-token path: long-lived, nothing to refresh
-            exp = json.loads(cred.read_text()).get("claudeAiOauth", {}).get("expiresAt", 0)
-            if exp - time.time() * 1000 > 30 * 60 * 1000:
-                return                              # still valid >30 min: no refresh needed yet
+            o = self._oauth_block(cred)
+            if not o.get("refreshToken"):
+                return                              # cannot self-refresh — a warm call can't help
+            if o.get("expiresAt", 0) - time.time() * 1000 > FRESH_MARGIN_MS:
+                return                              # still fresh: no refresh needed yet
             _docker("exec", "-e", "IS_SANDBOX=1", sess["container"],
                     "claude", "--dangerously-skip-permissions", "-p", "ok",
                     "--no-session-persistence", "--model", "claude-haiku-4-5", timeout=30)
@@ -740,9 +767,7 @@ class Manager:
             if name is not None:
                 self._write_session_index(key)
             if recreate:
-                self._start_container(s)   # rm -f + run with the new -v mounts
-                self.ensure_claude(s)      # boot claude and wait until its prompt is ready
-                self.ensure_ttyd(s)
+                self.recreate_container(s)   # rm -f + run with the new -v mounts/limits
             return s
         return None
 

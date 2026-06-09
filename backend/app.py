@@ -353,21 +353,49 @@ async def edit_session(sid: str, request: Request):
     email = current_user(request)
     name = body.get("name")
     mounts = body.get("mounts")   # None = leave mounts unchanged; recreates container if changed
-    s = await _to_thread(mgr.update, email, sid, name, mounts,
-                         body.get("cpus"), body.get("mem_mb"), body.get("restrict_egress"))
+    OPS_IN_FLIGHT.add(sid)        # update() may recreate the container (mounts/limits change)
+    try:
+        s = await _to_thread(mgr.update, email, sid, name, mounts,
+                             body.get("cpus"), body.get("mem_mb"), body.get("restrict_egress"))
+    finally:
+        OPS_IN_FLIGHT.discard(sid)
     if not s:
         raise HTTPException(400, "bad name or not found")
     return s
 
 
+# sids with a restart/recreate in flight. The terminal ws uses this to pick a close code for a
+# container that is briefly "missing": op in flight -> 1012 (retry, it'll be back), otherwise ->
+# 1000 (genuinely stopped; retrying would only loop docker work).
+OPS_IN_FLIGHT: set = set()
+
+
+def _teardown_live(sid: str):
+    """Tear down the live pump for a session AND kick its open chat websockets.
+    Called from sync endpoints (threadpool), so everything loop-bound goes through
+    call_soon_threadsafe. Poisoning the subscriber queues with None makes each ws
+    writer() exit -> the handler closes the socket -> the frontend's onclose
+    auto-reconnect builds a fresh Session; without this, an open chat ws stays
+    subscribed to the dead Session forever and never renders another event."""
+    s = LIVE.pop(sid, None)
+    if s:
+        s.stop()
+    t = PUMP.pop(sid, None)
+    loop = t.get_loop() if t else None
+    if t and loop:
+        loop.call_soon_threadsafe(t.cancel)
+    if s and loop:
+        for q in list(getattr(s, "_subscribers", [])):
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, None)   # writer() exits on None
+            except Exception:
+                pass
+
+
 @app.delete("/api/sessions/{sid}")
 def delete_session(sid: str, request: Request):
     email = current_user(request)
-    if sid in LIVE:
-        LIVE[sid].stop(); LIVE.pop(sid, None)
-        t = PUMP.pop(sid, None)
-        if t:
-            t.cancel()
+    _teardown_live(sid)
     ok = mgr.delete(email, sid)
     if not ok:
         raise HTTPException(404, "not found")
@@ -522,6 +550,8 @@ async def ws(websocket: WebSocket, sid: str):
         try:
             while True:
                 ev = await q.get()
+                if ev is None:        # poison pill from _teardown_live: session replaced — drop the
+                    break             # socket so the client reconnects to the fresh Session
                 await websocket.send_json(ev)
         except Exception:
             pass
@@ -631,14 +661,13 @@ def session_restart(sid: str, request: Request):
     if not settings_store.has_auth(_email_slug(email)):
         raise HTTPException(400, "Set your Claude credentials in Settings first")
     # tear down the live pump + container, then bring it back up and wait until claude is ready
-    s = LIVE.get(sid)
-    if s:
-        s.stop(); LIVE.pop(sid, None)
-        t = PUMP.pop(sid, None)
-        if t:
-            t.cancel()
-    mgr.stop_container(sess)
-    mgr.ensure_running(sess)   # start + ensure_claude + ensure_ttyd — blocks until the prompt is ready
+    OPS_IN_FLIGHT.add(sid)
+    try:
+        _teardown_live(sid)
+        mgr.stop_container(sess)
+        mgr.ensure_running(sess)   # start + ensure_claude + ensure_ttyd — blocks until the prompt is ready
+    finally:
+        OPS_IN_FLIGHT.discard(sid)
     return {"status": mgr.status(sess)}
 
 
@@ -659,13 +688,12 @@ def session_recreate(sid: str, request: Request):
         raise HTTPException(404, "not found")
     if not settings_store.has_auth(_email_slug(email)):
         raise HTTPException(400, "Set your Claude credentials in Settings first")
-    s = LIVE.get(sid)
-    if s:
-        s.stop(); LIVE.pop(sid, None)
-        t = PUMP.pop(sid, None)
-        if t:
-            t.cancel()
-    mgr.recreate_container(sess)   # blocks until claude is ready in the new container
+    OPS_IN_FLIGHT.add(sid)
+    try:
+        _teardown_live(sid)
+        mgr.recreate_container(sess)   # blocks until claude is ready in the new container
+    finally:
+        OPS_IN_FLIGHT.discard(sid)
     return {"status": mgr.status(sess)}
 
 
@@ -675,12 +703,7 @@ def session_stop(sid: str, request: Request):
     if not sess:
         raise HTTPException(404, "not found")
     # stopping the container does NOT delete the transcript — viewing stays available
-    s = LIVE.get(sid)
-    if s:
-        s.stop(); LIVE.pop(sid, None)
-        t = PUMP.pop(sid, None)
-        if t:
-            t.cancel()
+    _teardown_live(sid)
     mgr.stop_container(sess)
     return {"status": mgr.status(sess)}
 
@@ -703,6 +726,12 @@ async def _ttyd_ip(email: str, sid: str, theme: str = "dark") -> str | None:
     if not sess:
         return None
     loop = asyncio.get_event_loop()
+    # The terminal path must NEVER power the container on: ttyd's client auto-reconnects (we close
+    # 1001 on drops), so if this auto-started stopped containers, powering a session off while a
+    # terminal iframe exists would just turn it back on in a loop. Lifecycle belongs to the chat
+    # ws + the power/start endpoints; here we only ensure claude/ttyd inside a RUNNING container.
+    if await loop.run_in_executor(None, mgr.status, sess) != "running":
+        return None
     await loop.run_in_executor(None, mgr.ensure_running, sess)
     await loop.run_in_executor(None, lambda: mgr.ensure_ttyd(sess, theme))  # match UI theme
     return mgr.web_ip(sess) or None
@@ -716,12 +745,17 @@ async def term_ws(ws: WebSocket, sid: str):
         await ws.close(); return
     ip = await _ttyd_ip(em, sid)
     if not ip:
-        await ws.close(); return
+        # restart/recreate in flight -> 1012 ("service restart"): the ttyd client keeps retrying
+        # and re-attaches once the container is back. Genuinely stopped/missing -> clean 1000 stop.
+        await ws.close(code=1012 if sid in OPS_IN_FLIGHT else 1000)
+        return
     user, pwd = ttyd_credential(sid)   # ttyd now requires per-session basic auth (#6)
+    connected = False
     try:
         async with websockets.connect(f"ws://{user}:{pwd}@{ip}:{TTYD_PORT}/ws",
                                       subprotocols=["tty"], open_timeout=8,
                                       max_size=None) as up:
+            connected = True
             async def c2u():
                 try:
                     while True:
@@ -742,12 +776,12 @@ async def term_ws(ws: WebSocket, sid: str):
     except Exception:
         pass
     try:
-        # We reached here only after a connection was established, so any close now is a transient
-        # drop (container restart/recreate, backend redeploy, upstream ttyd gone). Close with 1001
-        # ("going away") rather than the default 1000 ("normal"): ttyd's client auto-reconnects on a
-        # non-1000 close, but on a clean 1000 it stops and nags "Press ⏎ to Reconnect". The early
-        # returns above keep 1000 on purpose (no container / unauthorized) so they don't loop.
-        await ws.close(code=1001)
+        # Close-code drives ttyd's client policy: non-1000 -> silent auto-reconnect, clean 1000 ->
+        # it stops and shows "Press ⏎ to Reconnect". An ESTABLISHED link that dropped (container
+        # restart/recreate, backend redeploy) is transient -> 1001 so the client re-attaches by
+        # itself. A link that never came up (upstream connect failed, container down) gets 1000 —
+        # retrying can't help and would loop docker work via _ttyd_ip forever.
+        await ws.close(code=1001 if connected else 1000)
     except Exception:
         pass
 

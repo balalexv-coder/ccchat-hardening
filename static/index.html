@@ -133,6 +133,10 @@
   #ctxtog.on{color:var(--ok);border-color:var(--ok)}
   /* collected into the ⋯ menu — keep in DOM (handlers/state) but hidden in the header */
   #power,#vscodeBtn,#ctxtog,#setBtn,#powerMsg{display:none!important}
+  /* keep the drawer + its opener usable above the per-chat op overlay (z-25): on mobile the
+     burger is the ONLY way to reach other sessions while this chat restarts/recreates */
+  #burger{position:relative;z-index:26}
+  #sidebar{z-index:35}
   #menuWrap{position:relative;flex:none}
   #menuBtn{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:16px;line-height:1;padding:3px 9px;cursor:pointer}
   #menuBtn:hover{color:var(--txt);background:var(--hover)}
@@ -712,6 +716,7 @@ power.onclick=async()=>{
   }catch{}
   power.classList.remove('busy'); power.textContent='●'; power.disabled=false;
   pm.textContent=''; renderSessions(); updatePower();
+  if(cur)refreshVersion(cur.id);   // running state changed → the cli probe may have new data
 };
 // Long container operations (restart / recreate). The overlay is tied to the session the op runs
 // on, not to the page — switching to another chat hides it there and shows it again on return.
@@ -726,19 +731,26 @@ async function containerOp(op,msg){
   const sid=cur.id;
   opBusy[sid]=msg; showOpOverlay();
   statusMap[sid]='stopped'; renderSessions(); updatePower();
+  let err=null;
   try{
-    const r=await fetch('/api/sessions/'+sid+'/'+op,{method:'POST'});
-    if(!r.ok){ const e=await r.json().catch(()=>({}));
-      opBusy[sid]='Failed: '+(e.detail||r.status); showOpOverlay();
-      await new Promise(s=>setTimeout(s,2000));
-    } else { statusMap[sid]=(await r.json()).status; }
-  }catch(e){
-    opBusy[sid]='Network error.'; showOpOverlay();
-    await new Promise(s=>setTimeout(s,2000));
+    // hard timeout: a hung POST (proxy drop, backend redeploy mid-request) must not leave the
+    // overlay up forever. Recreate worst-case is minutes (image boot + claude launch) — be generous.
+    const r=await fetch('/api/sessions/'+sid+'/'+op,{method:'POST',signal:AbortSignal.timeout(300000)});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); err='Failed: '+(e.detail||r.status); }
+    else { statusMap[sid]=(await r.json()).status; }
+  }catch(e){ err=e.name==='TimeoutError'?'Timed out — check the session.':'Network error.'; }
+  if(err){
+    // show the error until the user has actually SEEN it for ~2s (they may be in another chat;
+    // openSession re-renders the overlay from opBusy, so it greets them on return)
+    opBusy[sid]=err; showOpOverlay();
+    for(let i=0;i<600;i++){
+      if(cur&&cur.id===sid){ await new Promise(s=>setTimeout(s,2000)); break; }
+      await new Promise(s=>setTimeout(s,500));   // parked: wait (≤5 min) for them to come back
+    }
   }
   delete opBusy[sid]; showOpOverlay();
   renderSessions(); updatePower();
-  refreshVersion(sid);   // ws re-attaches by itself via the onclose auto-reconnect
+  refreshVersion(sid);   // the chat ws is kicked server-side and reconnects to the fresh session
 }
 function restartContainer(){ return containerOp('restart','Restarting container…'); }
 
@@ -751,19 +763,22 @@ async function refreshVersion(sid){
 }
 function updateVerBtn(){
   const v=cur&&verMap[cur.id];
-  if(!v||!v.cli){ verbtn.style.display='none'; return }
+  const stale=!!v&&v.current===false;
+  // show when we know the CLI version OR the image is stale (stale matters even for a stopped
+  // container, where the cli probe is skipped — that's exactly when recreate is most wanted)
+  if(!v||(!v.cli&&!stale)){ verbtn.style.display='none'; return }
   verbtn.style.display='inline-block';
-  verbtn.textContent='v'+v.cli;
+  verbtn.textContent=v.cli?'v'+v.cli:'old image';
   verbtn.classList.toggle('ok',v.current===true);
-  verbtn.classList.toggle('stale',v.current===false);
-  verbtn.disabled=v.current!==false;
-  verbtn.title=v.current===false
+  verbtn.classList.toggle('stale',stale);
+  verbtn.disabled=!stale;
+  verbtn.title=stale
     ?'A newer session image is available — click to recreate the container'
-    :'Claude CLI version — container image is up to date';
+    :(v.current===true?'Claude CLI version — container image is up to date':'Claude CLI version');
 }
 verbtn.onclick=async()=>{
   const v=cur&&verMap[cur.id];
-  if(!v||v.current!==false)return;
+  if(!v||v.current!==false)return;   // defense in depth: the button is also disabled when not stale
   const ok=await confirmDialog({title:'Recreate container?',
     message:'The container will be recreated from the updated image. Workspace, chat history and credentials are kept; the running Claude process restarts.',
     ok:'Recreate'});
