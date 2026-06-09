@@ -121,6 +121,7 @@ def ttyd_credential(sid: str):
 
 class Manager:
     def __init__(self):
+        self._cli_versions = {}   # image id -> Claude CLI version (exec'd once per image)
         # backfill the per-user id->name index for any sessions that predate this feature
         try:
             for key in _load().keys():
@@ -433,6 +434,31 @@ class Manager:
 
     def stop_container(self, sess: dict):
         _docker("stop", sess["container"])
+
+    def version_info(self, sess: dict) -> dict:
+        """Claude CLI version of the session container + whether it was created from the current
+        SESSION_IMAGE. 'current' compares image IDs, not CLI versions — an image rebuild with the
+        same CLI (env/config changes) still counts as outdated."""
+        r = _docker("inspect", "-f", "{{.Image}}", sess["container"])
+        if r.returncode != 0:
+            return {"cli": None, "current": None}     # container missing — nothing to compare
+        cimg = r.stdout.strip()
+        ri = _docker("image", "inspect", "-f", "{{.Id}}", SESSION_IMAGE)
+        cur_img = ri.stdout.strip() if ri.returncode == 0 else None
+        cli = self._cli_versions.get(cimg)
+        if cli is None and self.status(sess) == "running":
+            rv = _docker("exec", sess["container"], "claude", "--version")
+            if rv.returncode == 0 and rv.stdout.strip():
+                cli = rv.stdout.strip().split()[0]
+                self._cli_versions[cimg] = cli
+        return {"cli": cli, "current": (cimg == cur_img) if cur_img else None}
+
+    def recreate_container(self, sess: dict):
+        """Tear down the container and re-run it from the current SESSION_IMAGE (workspace,
+        transcript and credentials persist on the bind mounts). Blocks until claude is ready."""
+        self._start_container(sess)   # does rm -f first
+        self.ensure_claude(sess)
+        self.ensure_ttyd(sess)
 
     # ---- context (md layers) -------------------------------------------------
     def _ctx_paths(self, sess: dict):

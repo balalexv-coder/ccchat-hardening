@@ -642,6 +642,33 @@ def session_restart(sid: str, request: Request):
     return {"status": mgr.status(sess)}
 
 
+@app.get("/api/sessions/{sid}/version")
+def session_version(sid: str, request: Request):
+    sess = mgr._find(current_user(request), sid)
+    if not sess:
+        raise HTTPException(404, "not found")
+    return mgr.version_info(sess)
+
+
+@app.post("/api/sessions/{sid}/recreate")
+def session_recreate(sid: str, request: Request):
+    """Like /restart, but rm-f + run so the container picks up the current SESSION_IMAGE."""
+    email = current_user(request)
+    sess = mgr._find(email, sid)
+    if not sess:
+        raise HTTPException(404, "not found")
+    if not settings_store.has_auth(_email_slug(email)):
+        raise HTTPException(400, "Set your Claude credentials in Settings first")
+    s = LIVE.get(sid)
+    if s:
+        s.stop(); LIVE.pop(sid, None)
+        t = PUMP.pop(sid, None)
+        if t:
+            t.cancel()
+    mgr.recreate_container(sess)   # blocks until claude is ready in the new container
+    return {"status": mgr.status(sess)}
+
+
 @app.post("/api/sessions/{sid}/stop")
 def session_stop(sid: str, request: Request):
     sess = mgr._find(current_user(request), sid)

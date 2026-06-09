@@ -98,7 +98,7 @@
   #who{font-size:11px;color:var(--muted);padding:8px 14px;border-top:1px solid var(--line)}
 
   /* main */
-  #main{flex:1;display:flex;flex-direction:column;min-width:0}
+  #main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
   header{padding:10px 14px;border-bottom:1px solid var(--line);font-size:14px;display:flex;align-items:center;gap:10px}
   #burger{display:block;background:none;border:1px solid var(--line);color:var(--txt);border-radius:6px;font-size:18px;padding:2px 9px;cursor:pointer}
   #title{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -112,6 +112,9 @@
   #vscodeBtn:hover{border-color:var(--accent)}
   #vscodeBtn:hover{color:var(--accent);border-color:var(--accent)}
   #termtog.on{color:var(--ok);border-color:var(--ok)}
+  #verbtn{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:11px;padding:3px 8px;cursor:default}
+  #verbtn.ok{color:var(--ok);border-color:var(--ok)}
+  #verbtn.stale{color:var(--warn);border-color:var(--warn);cursor:pointer}
   /* chat (left) + optional terminal (right) split, with a draggable divider */
   #workRow{flex:1;display:flex;min-height:0;min-width:0}
   #chatCol{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -129,7 +132,7 @@
   #ctxtog{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:14px;padding:2px 8px;cursor:pointer}
   #ctxtog.on{color:var(--ok);border-color:var(--ok)}
   /* collected into the ⋯ menu — keep in DOM (handlers/state) but hidden in the header */
-  #power,#vscodeBtn,#ctxtog,#setBtn,#powerMsg{display:none!important}
+  #power,#vscodeBtn,#ctxtog,#setBtn,#powerMsg,#verbtn{display:none!important}
   #menuWrap{position:relative;flex:none}
   #menuBtn{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:16px;line-height:1;padding:3px 9px;cursor:pointer}
   #menuBtn:hover{color:var(--txt);background:var(--hover)}
@@ -444,6 +447,7 @@
       <button id="vscodeBtn" title="Open in VS Code (Remote-SSH)"><svg viewBox="0 0 256 254" width="16" height="16" aria-hidden="true"><path fill="#0065A9" d="M181.534 254.252a16.01 16.01 0 0 0 12.754-.49l52.97-25.477A16 16 0 0 0 256 213.84V40.16a16 16 0 0 0-8.742-14.246L194.288.438a16.01 16.01 0 0 0-18.267 3.105L74.196 96.553 29.768 62.834a10.68 10.68 0 0 0-13.643.606L1.94 76.357c-2.586 2.353-2.583 6.43.006 8.78L40.5 120.43 1.946 155.72c-2.59 2.35-2.592 6.427-.006 8.78l14.185 12.917a10.68 10.68 0 0 0 13.643.606l44.428-33.72 101.825 93.011a16 16 0 0 0 5.513 3.938zm10.305-184.83L114.566 128l77.273 58.578z"/></svg></button>
       <button id="ctxtog" title="View context (Global / User / Chat / Wiki)">📄</button>
       <button id="termtog" title="Terminal mode">⌨</button>
+      <button id="verbtn" style="display:none"></button>
       <button id="setBtn" title="Settings">⚙</button>
       <div id="menuWrap">
         <button id="menuBtn" title="Menu">⋯</button>
@@ -481,6 +485,14 @@
     <div id="termGutter" title="Drag to resize"></div>
     <iframe id="termframe" title="terminal"></iframe>
     </div><!-- /#workRow -->
+    <!-- container-op overlay: covers ONLY the chat pane (#main is position:relative), so the
+         session list stays usable and other chats can be opened while this one restarts -->
+    <div id="restartModal" style="display:none;position:absolute;inset:0;z-index:25;align-items:center;justify-content:center;background:rgba(0,0,0,.6)">
+      <div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px 28px;max-width:340px;text-align:center">
+        <div style="width:28px;height:28px;margin:0 auto 14px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite"></div>
+        <div id="restartMsg" style="font-size:14px;color:var(--txt)">Restarting container…</div>
+      </div>
+    </div>
   </div>
 
   <div id="confirmModal"><div class="box">
@@ -515,12 +527,6 @@
     </div>
   </div></div>
 
-  <div id="restartModal" style="display:none;position:fixed;inset:0;z-index:50;align-items:center;justify-content:center;background:rgba(0,0,0,.6)">
-    <div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px 28px;max-width:340px;text-align:center">
-      <div style="width:28px;height:28px;margin:0 auto 14px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite"></div>
-      <div id="restartMsg" style="font-size:14px;color:var(--txt)">Restarting container…</div>
-    </div>
-  </div>
 
   <div id="settingsPage">
     <button class="set-close-top" id="setCloseTop" title="Close settings">✕</button>
@@ -676,6 +682,8 @@ function openSession(s){
   setTermMode(false);   // always start in pretty mode for a freshly opened session
   closeContext();       // never carry the context viewer across sessions
   connect(); loadCommands(); refreshStatus(s.id); updatePower();
+  updateVerBtn(); refreshVersion(s.id);   // version badge for THIS session (cached map redraws instantly)
+  showOpOverlay();                        // re-show the restart/recreate overlay if one is in flight here
 }
 
 // ---------- container status (independent of viewing the transcript)
@@ -705,31 +713,69 @@ power.onclick=async()=>{
   power.classList.remove('busy'); power.textContent='●'; power.disabled=false;
   pm.textContent=''; renderSessions(); updatePower();
 };
-async function restartContainer(){
+// Long container operations (restart / recreate). The overlay is tied to the session the op runs
+// on, not to the page — switching to another chat hides it there and shows it again on return.
+const opBusy={};   // sid -> overlay message while a restart/recreate is in flight
+function showOpOverlay(){
+  const msg=cur&&opBusy[cur.id];
+  $('restartMsg').textContent=msg||'';
+  $('restartModal').style.display=msg?'flex':'none';
+}
+async function containerOp(op,msg){
   if(!cur)return;
   const sid=cur.id;
-  $('restartMsg').textContent='Restarting container…';
-  $('restartModal').style.display='flex';
+  opBusy[sid]=msg; showOpOverlay();
   statusMap[sid]='stopped'; renderSessions(); updatePower();
   try{
-    const r=await fetch('/api/sessions/'+sid+'/restart',{method:'POST'});
+    const r=await fetch('/api/sessions/'+sid+'/'+op,{method:'POST'});
     if(!r.ok){ const e=await r.json().catch(()=>({}));
-      $('restartMsg').textContent='Restart failed: '+(e.detail||r.status);
+      opBusy[sid]='Failed: '+(e.detail||r.status); showOpOverlay();
       await new Promise(s=>setTimeout(s,2000));
     } else { statusMap[sid]=(await r.json()).status; }
   }catch(e){
-    $('restartMsg').textContent='Network error during restart.';
+    opBusy[sid]='Network error.'; showOpOverlay();
     await new Promise(s=>setTimeout(s,2000));
   }
-  $('restartModal').style.display='none';
+  delete opBusy[sid]; showOpOverlay();
   renderSessions(); updatePower();
+  refreshVersion(sid);   // ws re-attaches by itself via the onclose auto-reconnect
 }
+function restartContainer(){ return containerOp('restart','Restarting container…'); }
+
+// ---------- CLI version badge: green = container matches the current session image
+const verbtn=$('verbtn'); const verMap={};
+async function refreshVersion(sid){
+  try{ verMap[sid]=await (await fetch('/api/sessions/'+sid+'/version')).json(); }
+  catch{ verMap[sid]=null }
+  if(cur&&cur.id===sid)updateVerBtn();
+}
+function updateVerBtn(){
+  const v=cur&&verMap[cur.id];
+  if(!v||!v.cli){ verbtn.style.display='none'; return }
+  verbtn.style.display='inline-block';
+  verbtn.textContent='v'+v.cli;
+  verbtn.classList.toggle('ok',v.current===true);
+  verbtn.classList.toggle('stale',v.current===false);
+  verbtn.disabled=v.current!==false;
+  verbtn.title=v.current===false
+    ?'A newer session image is available — click to recreate the container'
+    :'Claude CLI version — container image is up to date';
+}
+verbtn.onclick=async()=>{
+  const v=cur&&verMap[cur.id];
+  if(!v||v.current!==false)return;
+  const ok=await confirmDialog({title:'Recreate container?',
+    message:'The container will be recreated from the updated image. Workspace, chat history and credentials are kept; the running Claude process restarts.',
+    ok:'Recreate'});
+  if(ok)await containerOp('recreate','Recreating container…');
+};
 // poll status of the open session periodically
 setInterval(()=>{ if(cur)refreshStatus(cur.id) }, 5000);
 function closeChat(){
   localStorage.removeItem('lastSid');
   if(ws){ws.onclose=null;ws.close();ws=null}
   $('composerWrap').style.display='none'; title.textContent='ccchat'; power.style.display='none';
+  verbtn.style.display='none'; showOpOverlay();
   log.querySelectorAll('.msg').forEach(e=>e.remove());
   if(todoEl){todoEl.remove();todoEl=null;}
   busyStop();
