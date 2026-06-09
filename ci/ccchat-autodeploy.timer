@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ccchat auto-deploy every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=15
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=ccchat pull-based auto-deploy (dev/prod from GitHub)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/ccchat-src/ci/autodeploy.sh
+# log goes to the journal: journalctl -u ccchat-autodeploy

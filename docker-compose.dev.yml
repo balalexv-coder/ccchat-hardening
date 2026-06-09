@@ -1,0 +1,41 @@
+# Dev environment. Host-specific values come from a gitignored `.env` in this
+# directory (see .env.example); the orchestrator and its session containers share
+# the same host work-root and seed credentials, kept separate from production.
+# Run: docker compose -p ccchat-dev -f docker-compose.dev.yml up -d --build
+services:
+  ccchat-dev:
+    build: .
+    image: ccchat-dev:local
+    container_name: ccchat-dev
+    restart: unless-stopped
+    environment:
+      - IS_SANDBOX=1
+      - CCCHAT_STATE=/state/sessions.json
+      - HOST_WORK_ROOT=${HOST_WORK_ROOT:-/srv/vivarium-dev/work}
+      - LOCAL_WORK_ROOT=/work
+      # dev can run a separate session image so a Claude Code CLI upgrade is vetted
+      # here before prod (see ci/README.md)
+      - SESSION_IMAGE=${SESSION_IMAGE:-claude-term:next}
+      - HOST_SSH=${HOST_SSH:-}
+      - HOST_MACHINES=${HOST_MACHINES:-}
+      - VSCODE_SSH_HOST=${VSCODE_SSH_HOST:-}
+      - STT_UPSTREAM=${STT_UPSTREAM:-}
+      - CCCHAT_ADMINS=${CCCHAT_ADMINS:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./work:/work
+      - ./state:/state
+      - ./backend:/app/backend:ro
+      - ./static:/app/static:ro
+    networks:
+      - web                # reachable by the reverse proxy (web UI)
+      - ccchat-net         # reach session ttyd
+      - ccchat-restricted  # reach ttyd of egress-restricted sessions
+
+networks:
+  web:
+    external: true
+  ccchat-net:
+    external: true
+  ccchat-restricted:
+    external: true

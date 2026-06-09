@@ -1,0 +1,57 @@
+# Production environment. Host-specific values come from a gitignored `.env` in
+# this directory (see .env.example). Includes the allowlist egress proxy used by
+# "restrict internet" sessions.
+# Run: docker compose -p ccchat-hardening -f docker-compose.hardening.yml up -d --build
+services:
+  ccchat-hardening:
+    build: .
+    image: ccchat-hardening:local
+    container_name: ccchat-hardening
+    restart: unless-stopped
+    environment:
+      - IS_SANDBOX=1
+      - CCCHAT_STATE=/state/sessions.json
+      - HOST_WORK_ROOT=${HOST_WORK_ROOT:-/srv/vivarium/work}
+      - LOCAL_WORK_ROOT=/work
+      - SESSION_IMAGE=${SESSION_IMAGE:-claude-term:local}
+      - HOST_SSH=${HOST_SSH:-}
+      - HOST_MACHINES=${HOST_MACHINES:-}
+      - VSCODE_SSH_HOST=${VSCODE_SSH_HOST:-}
+      - STT_UPSTREAM=${STT_UPSTREAM:-}
+      - CCCHAT_ADMINS=${CCCHAT_ADMINS:-}
+      # Optional Cloudflare Access strict-JWT mode (set both to enable):
+      # - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
+      # - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./work:/work
+      - ./state:/state
+      - ./backend:/app/backend:ro
+      - ./static:/app/static:ro
+    networks:
+      - web              # reachable by the reverse proxy (web UI)
+      - ccchat-net       # reach session ttyd (normal sessions, isolated from web)
+      - ccchat-restricted  # reach ttyd of egress-restricted sessions
+
+  # allowlist egress proxy for "restrict internet" sessions
+  ccchat-egress:
+    image: python:3.12-slim
+    container_name: ccchat-egress
+    restart: unless-stopped
+    command: python /egress_proxy.py
+    environment:
+      - PORT=8888
+      - CCCHAT_EGRESS_ALLOW=api.anthropic.com,claude.ai,platform.claude.com,downloads.claude.ai,raw.githubusercontent.com,github.com,api.github.com,codeload.github.com,githubusercontent.com,pypi.org,files.pythonhosted.org,registry.npmjs.org,deb.debian.org,debian.org
+    volumes:
+      - ./egress/egress_proxy.py:/egress_proxy.py:ro
+    networks:
+      - ccchat-net         # outbound internet (NAT egress)
+      - ccchat-restricted  # receive from restricted sessions
+
+networks:
+  web:
+    external: true
+  ccchat-net:
+    external: true
+  ccchat-restricted:
+    external: true

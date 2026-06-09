@@ -1,0 +1,28 @@
+# --- secrets & history: NEVER commit ---
+**/.chome/
+**/.claude.json
+**/.credentials.json
+**/.claude.json.backup.*
+**/*.credentials.json.backup.*
+seed-chome/backups/
+ssh/
+cterm-home/
+*.pem
+*_ed25519
+
+# --- user / session runtime data: NEVER commit ---
+work/
+state/
+seed-chome/
+*.log
+
+# --- editor / manual backups ---
+*.bak
+*.bak-*
+*.bak.*
+
+# --- python / docker noise ---
+__pycache__/
+*.pyc
+.pytest_cache/
+.env

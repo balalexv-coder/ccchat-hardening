@@ -1,0 +1,29 @@
+# Default single-instance compose for Vivarium.
+# Copy .env.example to .env and edit it, then: docker compose up -d --build
+# The UI is then served on http://localhost:3000 (plain HTTP) — put any reverse
+# proxy / TLS in front of it, or use it directly. No reverse proxy is required.
+services:
+  vivarium:
+    build: .
+    image: vivarium:local
+    container_name: vivarium
+    restart: unless-stopped
+    ports:
+      - "3000:3000"          # the web UI (front it with your own proxy/TLS for remote access)
+    environment:
+      - IS_SANDBOX=1
+      - CCCHAT_STATE=/state/sessions.json
+      - HOST_WORK_ROOT=${HOST_WORK_ROOT:-/srv/vivarium/work}
+      - LOCAL_WORK_ROOT=/work
+      - SESSION_IMAGE=${SESSION_IMAGE:-claude-term:local}
+      - HOST_SSH=${HOST_SSH:-}
+      - HOST_MACHINES=${HOST_MACHINES:-}
+      - VSCODE_SSH_HOST=${VSCODE_SSH_HOST:-}
+      - STT_UPSTREAM=${STT_UPSTREAM:-}
+      - CCCHAT_ADMINS=${CCCHAT_ADMINS:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # orchestrate session containers
+      - ./work:/work                                  # our view of per-session workspaces
+      - ./state:/state                                # session list + auth state
+      - ./backend:/app/backend:ro
+      - ./static:/app/static:ro
