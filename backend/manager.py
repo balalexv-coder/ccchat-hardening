@@ -608,6 +608,27 @@ class Manager:
         except Exception:
             return False
 
+    def _warm_auth(self, sess: dict):
+        """Force any pending OAuth access-token refresh BEFORE the interactive claude launches and
+        the user sends msg #1. A freshly (re)created container can otherwise race the auto-refresh
+        and 401 on the first request — which needlessly tempts a /login. We make one cheap,
+        NON-persisted print-mode call (no session is written, so the interactive `-c` continue is
+        unaffected) and only when the stored access token is at/near expiry; sessions on a bare env
+        token or a still-fresh token need nothing. Runs while no interactive claude is up yet, so
+        there's no refresh-rotation race. Best-effort: never blocks or fails the launch."""
+        try:
+            cred = self.local_ws(sess) / ".chome" / ".credentials.json"
+            if not cred.exists():
+                return                              # env-token path: long-lived, nothing to refresh
+            exp = json.loads(cred.read_text()).get("claudeAiOauth", {}).get("expiresAt", 0)
+            if exp - time.time() * 1000 > 30 * 60 * 1000:
+                return                              # still valid >30 min: no refresh needed yet
+            _docker("exec", "-e", "IS_SANDBOX=1", sess["container"],
+                    "claude", "--dangerously-skip-permissions", "-p", "ok",
+                    "--no-session-persistence", "--model", "claude-haiku-4-5", timeout=30)
+        except Exception:
+            pass
+
     def ensure_claude(self, sess: dict):
         """Ensure an interactive claude is running inside a tmux session in the container.
         tmux gives claude a real TTY; we send input via `tmux send-keys` (no pty-in-pty).
@@ -633,6 +654,8 @@ class Manager:
         cfg["hasCompletedOnboarding"] = True
         cfg.setdefault("theme", "dark")
         cj.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        # warm up auth now (no interactive claude running yet) so msg #1 never races the token refresh
+        self._warm_auth(sess)
         # write the combined system prompt (global.md + chat.md) to a file the container can read,
         # then pass it via --append-system-prompt. File path is /workspace/.sysprompt (mounted).
         sp = self.system_prompt(sess)
