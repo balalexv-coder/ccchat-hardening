@@ -134,6 +134,33 @@ def test_parse_line_hides_askuserquestion_tool_use():
     assert "tool-1" in s._hidden_tool_ids
 
 
+def test_context_from_pane_extracts_prose_above_widget():
+    s = make_session()
+    pane = [
+        "❯ what shall we pick?",
+        "",
+        "● One container serves both chat-dev and cowork.",
+        "  So you cannot drop one domain alone.",
+        "",
+        "  ☐ cowork",
+        "  What do we do?",
+        "  1. Drop both",
+        "     both domains gone",
+        "  2. Keep cowork",
+        "  Enter to select · Esc to cancel",
+    ]
+    qi = pane.index("  What do we do?")
+    ctx = s._context_from_pane(pane, qi)
+    assert ctx == ("One container serves both chat-dev and cowork.\n"
+                   "So you cannot drop one domain alone.")
+
+
+def test_context_from_pane_empty_when_no_prose():
+    s = make_session()
+    pane = ["❯ ask me", "  ☐ H", "  Q?", "  1. a", "  Enter to select"]
+    assert s._context_from_pane(pane, pane.index("  Q?")) == ""
+
+
 def test_parse_aq_answers():
     txt = 'Your questions have been answered: "Pick a fruit"="Apple", "Size"="Large". Continue.'
     assert Session._parse_aq_answers(txt) == {"Pick a fruit": "Apple", "Size": "Large"}

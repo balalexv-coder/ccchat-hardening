@@ -201,6 +201,9 @@
   .wikichip{align-self:center;background:var(--chip);border:1px solid var(--chip-line);color:var(--muted);border-radius:14px;padding:5px 14px;font-size:12px}
   .choice{align-self:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;max-width:90%;display:flex;flex-direction:column;gap:7px}
   .choice .cq{font-size:14px;margin-bottom:3px}
+  /* live context scraped from the pane above the widget — what you're deciding on, shown pre-answer */
+  .choice .ccontext{font-size:12px;color:var(--muted);white-space:pre-wrap;line-height:1.45;margin-bottom:8px;
+    max-height:200px;overflow:auto;border-left:2px solid var(--line);padding-left:8px}
   .choice .cgrp{font-size:11px;color:var(--muted);margin-bottom:2px}
   .choice .cbtn{text-align:left;background:var(--code-bg);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 12px;font-size:14px;cursor:pointer}
   .choice .cbtn:hover{background:var(--hover);border-color:var(--accent)}
@@ -1409,6 +1412,9 @@ function choiceButtons(ev){
   // a poll after being answered, or is replayed on reconnect) — never draw the same choice twice.
   if(ev.id){ if(renderedChoices.has(ev.id)) return; renderedChoices.add(ev.id); }
   const box=document.createElement('div'); box.className='msg choice';
+  // claude's prose for this turn, scraped live from the pane above the widget — so you can read the
+  // context you're deciding on WHILE the choice is pending (before the clean markdown is flushed).
+  if(ev.context){const cx=document.createElement('div');cx.className='ccontext';cx.textContent=ev.context;box.appendChild(cx)}
   if(ev.group_total>1){const g=document.createElement('div');g.className='cgrp';
     g.textContent='Question '+((ev.group_idx||0)+1)+' of '+ev.group_total; box.appendChild(g)}
   if(ev.question){const q=document.createElement('div');q.className='cq';q.textContent=ev.question;box.appendChild(q)}

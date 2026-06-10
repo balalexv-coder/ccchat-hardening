@@ -450,9 +450,10 @@ class Session:
                 first_opt_line = idx; break
         if first_opt_line is None:
             return None
+        q_abs = start_i + first_opt_line          # default: the question sits just above the first option
         for j in range(first_opt_line - 1, -1, -1):
             if lines[j].strip():
-                question = lines[j].strip(); break
+                question = lines[j].strip(); q_abs = start_i + j; break
         # each option is followed by an indented description line (sometimes wrapped over several);
         # collect them so the UI can show what each choice MEANS, not just its bare label. `collecting`
         # is the index of the option currently accumulating description text, or None to drop it.
@@ -488,7 +489,44 @@ class Session:
         return {"kind": "choice", "id": sig,
                 "question": question, "options": options, "descriptions": descriptions,
                 "multi": has_checkbox, "allow_custom": allow_custom,
-                "group_idx": group_done, "group_total": group_total}
+                "group_idx": group_done, "group_total": group_total,
+                # claude's prose for this turn, scraped from the pane ABOVE the widget, so the user
+                # sees the context they're deciding on WHILE the widget is pending (the JSONL with the
+                # clean markdown isn't written until after the answer). Best-effort; "" if none.
+                "context": self._context_from_pane(all_lines, q_abs)}
+
+    def _context_from_pane(self, all_lines, q_index):
+        """Claude's most recent assistant prose, scraped from the tmux pane between the user's last
+        prompt (`❯ …`) and the choice widget. Terminal-rendered (wrapped/de-styled), best-effort —
+        replaced by the clean markdown once the JSONL flushes after the answer. Returns "" if none."""
+        start = 0
+        for i in range(min(q_index, len(all_lines)) - 1, -1, -1):
+            if all_lines[i].lstrip().startswith("❯"):
+                start = i + 1
+                break
+        out = []
+        for ln in all_lines[start:q_index]:
+            st = ln.strip()
+            if not st:
+                if out and out[-1] != "":
+                    out.append("")                       # keep paragraph breaks
+                continue
+            if st.startswith("❯") or st.startswith(">"):
+                continue
+            if "☐" in st or "☒" in st:                    # the widget's header chip / tab bar
+                continue
+            if set(st) <= set("─—-│ "):                   # separator rules
+                continue
+            if (st.startswith("⎿") or "bypass permissions" in st
+                    or "esc to interrupt" in st.lower() or "Baked for" in st
+                    or st.startswith("Tip:") or "Calculating" in st or "Philosophising" in st
+                    or "Sautéed" in st or st in ("Esc to cancel", "Enter to confirm")
+                    or st.startswith("Ran ") or st.startswith("Running ")
+                    or st.startswith("User answered") or st.startswith("Background command")):
+                continue
+            st = re.sub(r"^[●○•*✻✽✶]\s*", "", st)          # strip the assistant/spinner bullet
+            out.append(st)
+        return "\n".join(out).strip()[:2000]
 
     def _choice_from_pane(self, pane: str):
         """pump's view: parse + dedup so each distinct group is streamed to subscribers only once."""
