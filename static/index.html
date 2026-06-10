@@ -903,6 +903,11 @@ async function openSettings(tab,push){
   renderThemes();   // Appearance tab is available to everyone
   if($('termReplace')) $('termReplace').checked = termLayout()==='replace';
   refreshNotifUI();
+  // Show the panel IMMEDIATELY — don't block the open on network. The token status, admin tabs,
+  // mounts and users fill in asynchronously below. (Previously the page only appeared AFTER
+  // /api/settings + loadMounts + loadUsers resolved, so on mobile it felt slow to open.)
+  buildSetTabSelect();
+  $('settingsPage').classList.add('open');
   try{
     const s=await (await fetch('/api/settings')).json();
     if(s.oauth_token_set) $('setTokenStatus').textContent='saved ('+(s.oauth_token_masked||'set')+')';
@@ -910,11 +915,10 @@ async function openSettings(tab,push){
     $('tabMounts').style.display = s.is_admin ? 'block' : 'none';
     $('tabUsers').style.display = s.is_admin ? 'block' : 'none';
     $('tabSessions').style.display = s.is_admin ? 'block' : 'none';
+    buildSetTabSelect();   // rebuild the mobile combobox now that admin-gated tabs are resolved
     if(s.is_admin){ $('mountStatus').textContent=''; try{ await loadMounts() }catch(e){}
       $('usersStatus').textContent=''; try{ await loadUsers() }catch(e){} }
   }catch(e){}
-  buildSetTabSelect();   // populate the mobile combobox from the now-resolved (admin-gated) tab set
-  $('settingsPage').classList.add('open'); $('setToken').focus();
 }
 $('setBtn').onclick=()=>openSettings('account');
 
