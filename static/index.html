@@ -334,13 +334,23 @@
   #usersTable .udate{color:var(--muted);font-size:13px}
   #usersTable .uapp{display:flex;justify-content:center}
   #usersTable .uchk{width:18px;height:18px;cursor:pointer}
-  .srow-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0 16px}
-  .srow-controls label{font-size:13px;color:var(--txt)}
-  #sessTable .srow{display:grid;grid-template-columns:1.6fr 1fr 5.5rem 5rem 4rem 5rem 4rem;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+  /* checkbox label: terse text, detail lives in the title tooltip */
+  #settingsPage .chk-label{display:flex;gap:9px;align-items:center;cursor:pointer;font-size:14px;color:var(--txt);margin:8px 0}
+  #settingsPage .chk-label input{width:16px;height:16px;margin:0;cursor:pointer;flex:none}
+  /* reaping controls — every control shares the same 36px box so the row lines up */
+  .reap-auto{display:block;font-size:13px;color:var(--muted);margin:0 0 12px}
+  .reap-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .reap-controls .reap-field{display:flex;align-items:center;gap:7px;height:36px;padding:0 10px;background:var(--code-bg);
+    border:1px solid var(--line);border-radius:6px;font-size:13px;color:var(--muted);box-sizing:border-box}
+  .reap-controls .reap-field input{width:42px;background:none;border:none;color:var(--txt);font:inherit;font-size:14px;text-align:right;padding:0;outline:none}
+  .reap-controls button{height:36px;box-sizing:border-box;display:inline-flex;align-items:center}
+  .reap-controls button.icon{padding:0;width:36px;justify-content:center;font-size:15px}
+  #sessTable{margin-top:18px}
+  #sessTable .srow{display:grid;grid-template-columns:1.6fr 1fr 5.5rem 5rem 4rem 5rem 4rem;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
   #sessTable .shead{color:var(--muted);font-size:12px}
   #sessTable .sname{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #sessTable .sst-running{color:var(--ok)} #sessTable .sst-stopped{color:var(--muted)} #sessTable .sst-missing{color:var(--warn)}
-  #sessTable .sstop{background:none;border:1px solid var(--line);color:var(--muted);border-radius:5px;font-size:12px;padding:2px 8px;cursor:pointer}
+  #sessTable .sstop{background:none;border:1px solid var(--line);color:var(--muted);border-radius:5px;font-size:12px;padding:3px 10px;cursor:pointer}
   #sessTable .sstop:hover{border-color:var(--warn);color:var(--warn)}
   #sessTable .sstop:disabled{opacity:.35;cursor:default}
   #settingsPage{display:none;position:fixed;inset:0;z-index:30;background:var(--bg);color:var(--txt)}
@@ -587,10 +597,10 @@
         <div id="themeGroups"></div>
         <hr style="border:0;border-top:1px solid var(--line);margin:22px 0">
         <h3>Terminal</h3>
-        <p class="hint">How the terminal opens (⋯ → Terminal).</p>
-        <label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer;max-width:560px;font-size:13px;color:var(--txt)">
-          <input type="checkbox" id="termReplace" style="margin-top:2px;width:16px;height:16px">
-          <span>Show full-screen (instead of the chat). When off, it opens to the right of the chat with a draggable divider.</span>
+        <p class="hint">How the terminal opens from ⋯ → Terminal.</p>
+        <label class="chk-label" title="When off, the terminal opens beside the chat with a draggable divider">
+          <input type="checkbox" id="termReplace">
+          <span>Open full-screen</span>
         </label>
       </div>
       <div class="set-pane" data-pane="mounts">
@@ -624,15 +634,17 @@
         <div class="status" id="usersStatus" style="margin-top:12px"></div>
       </div>
       <div class="set-pane" data-pane="sessions">
-        <h3>Sessions &amp; resources</h3>
-        <p class="hint">Every session across all users with live RAM/CPU and idle time. Stopping a
-          session frees its RAM/CPU — the workspace and chat history persist, and it restarts on the
-          next message. <span id="reapAuto"></span></p>
-        <div class="srow-controls">
-          <label>Reap idle over <input type="number" id="reapHours" min="0.25" step="0.25" value="6" style="width:64px"> h</label>
-          <button class="ghost" id="reapDry" type="button">Preview</button>
-          <button class="primary" id="reapNow" type="button">Stop idle now</button>
-          <button class="ghost" id="sessRefresh" type="button" title="Refresh">↻</button>
+        <h3>Sessions</h3>
+        <p class="hint">Live memory and CPU across all sessions. Stopping a session frees its
+          resources; the workspace and history are kept and it resumes on the next message.</p>
+        <span class="reap-auto" id="reapAuto" title="Configured on the server"></span>
+        <div class="reap-controls">
+          <div class="reap-field" title="Sessions with no activity for longer than this are stopped">
+            <span>Idle over</span><input type="number" id="reapHours" min="0.25" step="0.25" value="6"><span>h</span>
+          </div>
+          <button class="ghost" id="reapDry" type="button" title="Show which sessions would stop, without stopping them">Preview</button>
+          <button class="primary" id="reapNow" type="button">Stop idle</button>
+          <button class="ghost icon" id="sessRefresh" type="button" title="Refresh">↻</button>
           <span class="status" id="reapStatus"></span>
         </div>
         <div id="sessTable">
@@ -974,8 +986,8 @@ async function loadAdminSessions(){
   catch(e){ $('reapStatus').textContent='failed to load'; return; }
   const auto=t.reap&&t.reap.auto_hours>0;
   $('reapAuto').textContent = auto
-    ? `Auto-reaping is ON: idle over ${t.reap.auto_hours}h, swept every ${t.reap.interval_min}m.`
-    : 'Auto-reaping is off — set CCCHAT_IDLE_REAP_HOURS to enable a background sweep.';
+    ? `Auto-cleanup: stops sessions idle over ${t.reap.auto_hours}h`
+    : 'Auto-cleanup: off';
   const rows=t.sessions||[]; const box=$('sessRows'); box.innerHTML='';
   let totMem=0, nRun=0;
   rows.forEach(s=>{
