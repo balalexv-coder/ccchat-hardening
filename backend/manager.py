@@ -852,8 +852,12 @@ class Manager:
             sp_arg = ' --append-system-prompt "$(cat /workspace/.sysprompt)"'
         # choice buttons use claude's BUILT-IN AskUserQuestion widget (parsed from JSONL, driven
         # via tmux) — no MCP server, so no --mcp-config and no new-server approval dialog.
-        launch = (f"claude --dangerously-skip-permissions{sp_arg} -c 2>/dev/null || "
-                  f"claude --dangerously-skip-permissions{sp_arg}")
+        # EXPERIMENT (dev): disable the built-in AskUserQuestion widget so claude asks in plain text
+        # instead. Plain-text questions render through the normal JSONL path (correct order, in the
+        # transcript, survive reload) — sidestepping the tmux-scraped choice widget entirely.
+        no_aq = " --disallowedTools AskUserQuestion"
+        launch = (f"claude --dangerously-skip-permissions{no_aq}{sp_arg} -c 2>/dev/null || "
+                  f"claude --dangerously-skip-permissions{no_aq}{sp_arg}")
         _docker("exec", "-e", "IS_SANDBOX=1", c, "tmux", "new-session", "-d", "-s", "main",
                 "-x", "200", "-y", "50", "bash", "-lc", f"cd /workspace && {launch}")
         # enable mouse-wheel scrolling in terminal mode (forwards wheel to the TUI / enters copy-mode
