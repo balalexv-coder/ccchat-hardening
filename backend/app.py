@@ -5,6 +5,7 @@ so app auth + the admin-approval gate are the only barrier.
 import asyncio
 import datetime
 import json
+import logging
 from contextlib import asynccontextmanager
 import os
 import re
@@ -25,6 +26,7 @@ from .session import Session
 userauth.ensure_default_admin()      # create admin with a random/env password on first start
 userauth.assert_no_default_admin()   # refuse to run with the legacy admin/admin on a public origin
 
+_LOG = logging.getLogger("uvicorn.error")
 TTYD_PORT = 7681
 # optional external whisper-stt service for high-quality transcription; the frontend falls back to
 # the browser Web Speech API when this is unset or unreachable
@@ -93,12 +95,14 @@ def _session_notify(sess: dict, ev: dict):
 async def _do_notify(sess: dict, ev: dict):
     sid = sess.get("id")
     slug = sess.get("user")
+    kind = ev.get("kind")
     if not sid or not slug:
         return
-    if not push_store.get(slug):
+    subs = push_store.get(slug)
+    if not subs:
+        _LOG.info("[notify] sid=%s kind=%s — no subscriptions for %s", sid, kind, slug)
         return                                       # no registered devices — skip the work
     name = sess.get("name") or sid[:8]
-    kind = ev.get("kind")
     if kind == "done":
         title, body = name, "Claude finished — tap to open."
     elif kind == "choice":
@@ -109,10 +113,12 @@ async def _do_notify(sess: dict, ev: dict):
         return
     payload = {"title": title, "body": body, "sid": sid, "tag": f"{sid}:{kind}"}
     skip = _watching_endpoints(sid)                  # devices currently looking → chime, don't buzz
+    _LOG.info("[notify] sid=%s kind=%s subs=%d watching=%d", sid, kind, len(subs), len(skip))
     try:
-        await _to_thread(notify.send_to_user, slug, payload, skip)
-    except Exception:
-        pass
+        sent = await _to_thread(notify.send_to_user, slug, payload, skip)
+        _LOG.info("[notify] sid=%s kind=%s sent=%s", sid, kind, sent)
+    except Exception as e:
+        _LOG.warning("[notify] sid=%s send error: %s", sid, e)
 
 
 @asynccontextmanager
