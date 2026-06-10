@@ -123,6 +123,14 @@ def ttyd_credential(sid: str):
     return "ccchat", pwd
 
 
+def code_token(sid: str) -> str:
+    """Per-session OpenVSCode connection token (same trust model as ttyd_credential). The proxy
+    injects it on every upstream request so the browser never sees it; another container on the
+    shared net hitting the editor port directly lacks it and is rejected."""
+    return hmac.new(_ttyd_secret().encode(), ("code:" + (sid or "")).encode(),
+                    hashlib.sha256).hexdigest()[:32]
+
+
 class Manager:
     def __init__(self):
         self._cli_versions = {}   # image id -> Claude CLI version (exec'd once per image)
@@ -411,6 +419,30 @@ class Manager:
         "dark":  '{"background":"#1f1e1d","foreground":"#e8e6e3","cursor":"#c96442"}',
         "light": '{"background":"#faf9f5","foreground":"#1f1e1d","cursor":"#c96442"}',
     }
+
+    CODE_PORT = 3100
+
+    def ensure_code(self, sess: dict):
+        """Launch OpenVSCode Server in the session container (lazily), serving /workspace under the
+        /code/<sid> base path. Reached only through the app proxy; the per-session connection token
+        (injected by the proxy) blocks other containers on the shared net from connecting. Blocks
+        until the server answers so the first proxied request doesn't 502."""
+        c = sess["container"]; sid = sess["id"]
+        up = "up" in (_docker("exec", c, "sh", "-c",
+                      "pgrep -f openvscode-server >/dev/null 2>&1 && echo up || echo down").stdout or "")
+        if not up:
+            tok = code_token(sid)
+            _docker("exec", "-d", c, "sh", "-lc",
+                    f"/opt/openvscode-server/bin/openvscode-server --host 0.0.0.0 "
+                    f"--port {self.CODE_PORT} --server-base-path /code/{sid} "
+                    f"--connection-token {tok} >/tmp/code.log 2>&1")
+        for _ in range(40):                          # wait until it's listening (cold boot ~3-8s)
+            r = _docker("exec", c, "sh", "-c",
+                        f"curl -s -o /dev/null -w '%{{http_code}}' "
+                        f"http://127.0.0.1:{self.CODE_PORT}/code/{sid}/ 2>/dev/null || true")
+            if (r.stdout or "").strip() not in ("", "000"):
+                return
+            time.sleep(0.4)
 
     def ensure_ttyd(self, sess: dict, theme: str = "dark"):
         """Run ttyd inside the session container, attached to the SAME tmux 'main' that claude runs

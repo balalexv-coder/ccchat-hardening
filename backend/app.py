@@ -10,15 +10,16 @@ import os
 import re
 import time
 import traceback
+import urllib.parse
 
 import httpx
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, Response, JSONResponse
+from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import appconfig, mounts_store, settings_store, userauth
-from .manager import Manager, _email_slug, ttyd_credential
+from .manager import Manager, _email_slug, ttyd_credential, code_token
 from .session import Session
 
 userauth.ensure_default_admin()      # create admin with a random/env password on first start
@@ -885,6 +886,98 @@ async def term_asset(sid: str, path: str, request: Request):
         r = await cli.get(f"http://{ip}:{TTYD_PORT}/{path}", auth=ttyd_credential(sid))
     return Response(r.content, media_type=r.headers.get("content-type", "application/octet-stream"),
                     status_code=r.status_code)
+
+
+# ---- in-browser VS Code: proxy the session container's OpenVSCode Server (served at /code/<sid>) ----
+# OpenVSCode runs with --server-base-path=/code/<sid>, so every URL it emits already carries the
+# prefix — we forward the path verbatim (no rewriting). The per-session connection token is injected
+# on every upstream request, so the browser never holds it and a co-tenant container that hits the
+# editor port directly (no token) is rejected. Auth is the app session, like the chat/terminal.
+_CODE_HOP = {"host", "cookie", "connection", "content-length", "content-encoding",
+             "transfer-encoding", "keep-alive"}
+
+
+async def _code_ip(email: str, sid: str) -> str | None:
+    sess = mgr._find(email, sid)
+    if not sess:
+        return None
+    loop = asyncio.get_event_loop()
+    if await loop.run_in_executor(None, mgr.status, sess) != "running":
+        return None
+    await loop.run_in_executor(None, mgr.ensure_running, sess)
+    await loop.run_in_executor(None, mgr.ensure_code, sess)
+    return mgr.web_ip(sess) or None
+
+
+@app.get("/code/{sid}")
+async def code_root(sid: str, request: Request):
+    _require_approved(request)
+    q = request.url.query
+    return RedirectResponse(f"/code/{sid}/" + (f"?{q}" if q else ""))
+
+
+@app.api_route("/code/{sid}/{path:path}",
+               methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def code_http(sid: str, path: str, request: Request):
+    ip = await _code_ip(_require_approved(request), sid)
+    if not ip:
+        raise HTTPException(404, "not found")
+    q = dict(request.query_params); q["tkn"] = code_token(sid)
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _CODE_HOP}
+    body = await request.body()
+    async with httpx.AsyncClient(timeout=60) as cli:
+        up = await cli.request(request.method, f"http://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}",
+                               params=q, content=body, headers=headers)
+    out = {k: v for k, v in up.headers.items() if k.lower() not in _CODE_HOP}
+    return Response(up.content, status_code=up.status_code, headers=out,
+                    media_type=up.headers.get("content-type"))
+
+
+@app.websocket("/code/{sid}/{path:path}")
+async def code_ws(ws: WebSocket, sid: str, path: str):
+    em = current_user_ws(ws)
+    if em is None or not userauth.is_approved(em):
+        await ws.close(); return
+    ip = await _code_ip(em, sid)
+    if not ip:
+        await ws.close(); return
+    await ws.accept()
+    q = dict(ws.query_params); q["tkn"] = code_token(sid)
+    qs = urllib.parse.urlencode(q)
+    try:
+        async with websockets.connect(f"ws://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}?{qs}",
+                                      max_size=None, open_timeout=12) as up:
+            async def c2u():
+                try:
+                    while True:
+                        m = await ws.receive()
+                        if m["type"] == "websocket.disconnect":
+                            break
+                        if m.get("bytes") is not None:
+                            await up.send(m["bytes"])
+                        elif m.get("text") is not None:
+                            await up.send(m["text"])
+                except Exception:
+                    pass
+            async def u2c():
+                try:
+                    async for m in up:
+                        if isinstance(m, bytes):
+                            await ws.send_bytes(m)
+                        else:
+                            await ws.send_text(m)
+                except Exception:
+                    pass
+            t1 = asyncio.create_task(c2u()); t2 = asyncio.create_task(u2c())
+            _, pend = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+            for t in pend:
+                t.cancel()
+    except Exception:
+        pass
+    try:
+        await ws.close()
+    except Exception:
+        pass
 
 
 @app.get("/healthz")

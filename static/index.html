@@ -473,7 +473,7 @@
       <button id="ctxSize" title="Context size — click to /compact"></button>
       <button id="power" style="display:none">●</button>
       <span id="powerMsg"></span>
-      <button id="vscodeBtn" title="Open in VS Code (Remote-SSH)"><svg viewBox="0 0 256 254" width="16" height="16" aria-hidden="true"><path fill="#0065A9" d="M181.534 254.252a16.01 16.01 0 0 0 12.754-.49l52.97-25.477A16 16 0 0 0 256 213.84V40.16a16 16 0 0 0-8.742-14.246L194.288.438a16.01 16.01 0 0 0-18.267 3.105L74.196 96.553 29.768 62.834a10.68 10.68 0 0 0-13.643.606L1.94 76.357c-2.586 2.353-2.583 6.43.006 8.78L40.5 120.43 1.946 155.72c-2.59 2.35-2.592 6.427-.006 8.78l14.185 12.917a10.68 10.68 0 0 0 13.643.606l44.428-33.72 101.825 93.011a16 16 0 0 0 5.513 3.938zm10.305-184.83L114.566 128l77.273 58.578z"/></svg></button>
+      <button id="vscodeBtn" title="Open in VS Code (in browser, inside the session)"><svg viewBox="0 0 256 254" width="16" height="16" aria-hidden="true"><path fill="#0065A9" d="M181.534 254.252a16.01 16.01 0 0 0 12.754-.49l52.97-25.477A16 16 0 0 0 256 213.84V40.16a16 16 0 0 0-8.742-14.246L194.288.438a16.01 16.01 0 0 0-18.267 3.105L74.196 96.553 29.768 62.834a10.68 10.68 0 0 0-13.643.606L1.94 76.357c-2.586 2.353-2.583 6.43.006 8.78L40.5 120.43 1.946 155.72c-2.59 2.35-2.592 6.427-.006 8.78l14.185 12.917a10.68 10.68 0 0 0 13.643.606l44.428-33.72 101.825 93.011a16 16 0 0 0 5.513 3.938zm10.305-184.83L114.566 128l77.273 58.578z"/></svg></button>
       <button id="ctxtog" title="View context (Global / User / Chat / Wiki)">📄</button>
       <button id="termtog" title="Terminal mode">⌨</button>
       <button id="verbtn" style="display:none"></button>
@@ -1658,11 +1658,12 @@ function buildMenu(){
     {ic:'🔧', label:'Tool calls', hint:toolsShown()?'on':'', need:false, act:()=>toggleToolVis()},
     running ? {ic:'↻', label:'Restart container', need:true, act:()=>restartContainer()}
             : {ic:'●', label:'Start container', need:true, act:()=>$('power').click()},
-    {ic:'⧉', label:'Open in VS Code', need:true, act:()=>$('vscodeBtn').click()},
+    {ic:'⧉', label:'Open in VS Code', need:true, act:()=>openVscodeWeb()},
+    (window._me&&_me.is_admin) ? {ic:'🖥', label:'VS Code (host SSH)', need:true, act:()=>openVscodeHost()} : null,
     {ic:'📄', label:'View context', hint:ctxOn?'on':'', need:true, act:()=>$('ctxtog').click()},
     {sep:true},
     {ic:'⚙', label:'Settings', need:false, act:()=>$('setBtn').click()},
-  ];
+  ].filter(Boolean);
   const drop=$('menuDrop'); drop.innerHTML='';
   items.forEach(it=>{
     if(it.sep){ const s=document.createElement('div'); s.className='sep'; drop.appendChild(s); return; }
@@ -1682,13 +1683,17 @@ document.addEventListener('click',e=>{ if(!$('menuWrap').contains(e.target)) clo
 let _vscodeHost=null;
 fetch('/api/vscode-host').then(r=>r.json()).then(j=>{_vscodeHost=j.host;}).catch(()=>{});
 const vscodeBtn=document.getElementById('vscodeBtn');
-if(vscodeBtn) vscodeBtn.onclick=()=>{
+// Primary: in-browser VS Code running INSIDE the session container (sandboxed, has the Claude CLI
+// and the project toolchain), proxied behind the app login — no local SSH key, no host root.
+function openVscodeWeb(){
+  if(cur && statusMap[cur.id]==='running') window.open('/code/'+cur.id+'/?folder=/workspace','_blank');
+}
+// Advanced (admin): VS Code Remote-SSH to the HOST view of the workspace — full root on the VPS.
+function openVscodeHost(){
   if(!cur||!cur.host_ws||!_vscodeHost) return;
-  // vscode://vscode-remote/ssh-remote+<host><abs-path> — opens a Remote-SSH window on the path,
-  // then the browser tab is done (no terminal left open, just VS Code).
-  const url='vscode://vscode-remote/ssh-remote+'+encodeURIComponent(_vscodeHost)+cur.host_ws;
-  window.location.href=url;
-};
+  window.location.href='vscode://vscode-remote/ssh-remote+'+encodeURIComponent(_vscodeHost)+cur.host_ws;
+}
+if(vscodeBtn) vscodeBtn.onclick=openVscodeWeb;
 
 
 // ---------- auth gate (username/password; CF Access is the outer gate) ----------
