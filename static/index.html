@@ -418,10 +418,22 @@
   #mountTable .adm input{width:16px;height:16px;margin:0;cursor:pointer;accent-color:var(--accent)}
   #mountTable button.del{margin:0;padding:0;line-height:1;background:var(--hover);border:1px solid var(--line);
     color:var(--txt);border-radius:6px;cursor:pointer}
+  /* mobile-only combobox that replaces tab strips (Settings rail / context tabs) — hidden on desktop */
+  .mobile-tab-select{display:none;background:var(--code-bg);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:10px 12px;font:inherit;font-size:15px;cursor:pointer}
+
   @media(max-width:760px){
-    #settingsPage .set-rail{width:150px;min-width:150px}
     #mountTable .mhead{display:none}
     #mountTable .mrow{grid-template-columns:1fr;gap:4px;border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0}
+    /* Settings: drop the left tab rail, switch to a combobox on top + content below */
+    #settingsPage.open{flex-direction:column}
+    #settingsPage .set-rail{display:none}
+    #settingsPage .set-select{display:block;margin:16px 56px 4px 16px}   /* right gap clears the ✕ */
+    #settingsPage .set-content{padding:14px 18px 24px}
+    /* Context viewer: replace the horizontal tab buttons with a combobox in the header */
+    #contextView .cv-tabs{display:none}
+    #contextView .cv-select{display:block;flex:1;margin-bottom:8px}
+    #contextView .cv-body{padding:14px}
   }
 
   @media(max-width:760px){
@@ -489,6 +501,7 @@
     <div id="contextView">
       <div class="cv-head">
         <div class="cv-tabs" id="ctxTabs"></div>
+        <select id="ctxTabSelect" class="mobile-tab-select cv-select" aria-label="Context layer"></select>
         <button id="ctxClose" title="Back to chat">✕</button>
       </div>
       <div class="cv-body" id="ctxBody"></div>
@@ -569,6 +582,7 @@
       <div class="spacer"></div>
       <span id="setWho" class="hint" style="padding:0 16px"></span>
     </div>
+    <select id="setTabSelect" class="mobile-tab-select set-select" aria-label="Settings section"></select>
     <div class="set-content">
       <div class="set-pane active" data-pane="account">
         <h3>Account</h3>
@@ -867,8 +881,18 @@ function setTab(name){
   if(name==='sessions') startSessPoll(); else stopSessPoll();
   document.querySelectorAll('#settingsPage .set-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('#settingsPage .set-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane===name));
+  const sel=$('setTabSelect'); if(sel && sel.value!==name) sel.value=name;   // keep the mobile combobox in sync
 }
 document.querySelectorAll('#settingsPage .set-tab').forEach(b=>b.onclick=()=>{ setTab(b.dataset.tab); history.replaceState({},'', '/settings/'+b.dataset.tab); });
+// mobile combobox: rebuild from the currently-visible tabs (admin tabs are gated), then switch on change
+function buildSetTabSelect(){
+  const sel=$('setTabSelect'); if(!sel) return;
+  const tabs=[...document.querySelectorAll('#settingsPage .set-tab')].filter(b=>b.style.display!=='none');
+  sel.innerHTML=tabs.map(b=>`<option value="${b.dataset.tab}">${b.textContent.trim()}</option>`).join('');
+  const active=document.querySelector('#settingsPage .set-tab.active');
+  sel.value=(active&&active.dataset.tab)||'account';
+}
+$('setTabSelect').onchange=e=>{ setTab(e.target.value); history.replaceState({},'', '/settings/'+e.target.value); };
 function closeSettings(push){ stopSessPoll(); $('settingsPage').classList.remove('open'); if(push!==false) history.pushState({},'', '/chats'); }
 $('setCloseTop').onclick=()=>closeSettings();
 async function openSettings(tab,push){
@@ -889,6 +913,7 @@ async function openSettings(tab,push){
     if(s.is_admin){ $('mountStatus').textContent=''; try{ await loadMounts() }catch(e){}
       $('usersStatus').textContent=''; try{ await loadUsers() }catch(e){} }
   }catch(e){}
+  buildSetTabSelect();   // populate the mobile combobox from the now-resolved (admin-gated) tab set
   $('settingsPage').classList.add('open'); $('setToken').focus();
 }
 $('setBtn').onclick=()=>openSettings('account');
@@ -1779,6 +1804,7 @@ function renderCtxTab(k){
   _ctxTab=k;
   const layer=CTX_LAYERS.find(l=>l[0]===k)||CTX_LAYERS[0];
   $('ctxTabs').querySelectorAll('.cv-tab').forEach(b=>b.classList.toggle('active',b.dataset.k===k));
+  const sel=$('ctxTabSelect'); if(sel && sel.value!==k) sel.value=k;   // keep the mobile combobox in sync
   const v=((_ctxData&&_ctxData[k])||'').trim();
   let body;
   if(!v) body='<div class="empty">(empty)</div>';
@@ -1791,6 +1817,8 @@ async function openContext(){
   document.body.classList.add('ctx-mode'); $('ctxtog').classList.add('on');
   $('ctxTabs').innerHTML=CTX_LAYERS.map(([k,file])=>`<button class="cv-tab" data-k="${k}">${file}</button>`).join('');
   $('ctxTabs').querySelectorAll('.cv-tab').forEach(b=>b.onclick=()=>renderCtxTab(b.dataset.k));
+  const csel=$('ctxTabSelect');   // mobile combobox mirror of the tabs
+  if(csel){ csel.innerHTML=CTX_LAYERS.map(([k,file])=>`<option value="${k}">${file}</option>`).join(''); csel.value=_ctxTab; csel.onchange=e=>renderCtxTab(e.target.value); }
   $('ctxBody').innerHTML='<div class="cv-layer empty">Loading…</div>';
   try{
     _ctxData=await (await fetch('/api/sessions/'+cur.id+'/context')).json();
