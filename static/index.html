@@ -338,8 +338,8 @@
   #settingsPage .chk-label{display:flex;gap:9px;align-items:center;cursor:pointer;font-size:14px;color:var(--txt);margin:8px 0}
   #settingsPage .chk-label input{width:16px;height:16px;margin:0;cursor:pointer;flex:none}
   /* reaping controls — every control shares the same 36px box so the row lines up */
-  .reap-auto{display:block;font-size:13px;color:var(--muted);margin:0 0 12px}
   .reap-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .reap-controls .reap-toggle{margin:0;height:36px;white-space:nowrap}
   .reap-controls .reap-field{display:flex;align-items:center;gap:7px;height:36px;padding:0 10px;background:var(--code-bg);
     border:1px solid var(--line);border-radius:6px;font-size:13px;color:var(--muted);box-sizing:border-box}
   .reap-controls .reap-field input{width:42px;background:none;border:none;color:var(--txt);font:inherit;font-size:14px;text-align:right;padding:0;outline:none}
@@ -642,13 +642,18 @@
         <h3>Sessions</h3>
         <p class="hint">Live memory and CPU across all sessions. Stopping a session frees its
           resources; the workspace and history are kept and it resumes on the next message.</p>
-        <span class="reap-auto" id="reapAuto" title="Configured on the server"></span>
         <div class="reap-controls">
-          <div class="reap-field" title="Sessions with no activity for longer than this are stopped">
-            <span>Idle over</span><input type="number" id="reapHours" min="0.25" step="0.25" value="6"><span>h</span>
+          <label class="chk-label reap-toggle" title="Periodically stop sessions idle past the threshold">
+            <input type="checkbox" id="reapEnabled"><span>Auto-cleanup</span>
+          </label>
+          <div class="reap-field" title="A session with no activity for longer than this is stopped">
+            <span>idle over</span><input type="number" id="reapHours" min="0.25" step="0.25" value="6"><span>h</span>
+          </div>
+          <div class="reap-field" title="How often auto-cleanup sweeps">
+            <span>every</span><input type="number" id="reapInterval" min="1" step="5" value="30"><span>min</span>
           </div>
           <button class="ghost" id="reapDry" type="button" title="Show which sessions would stop, without stopping them">Preview</button>
-          <button class="primary" id="reapNow" type="button">Stop idle</button>
+          <button class="primary" id="reapNow" type="button">Stop idle now</button>
           <button class="ghost icon" id="sessRefresh" type="button" title="Refresh">↻</button>
           <span class="status" id="reapStatus"></span>
         </div>
@@ -989,10 +994,11 @@ async function loadAdminSessions(){
   let t;
   try{ const r=await fetch('/api/admin/sessions'); if(!r.ok) throw 0; t=await r.json(); }
   catch(e){ $('reapStatus').textContent='failed to load'; return; }
-  const auto=t.reap&&t.reap.auto_hours>0;
-  $('reapAuto').textContent = auto
-    ? `Auto-cleanup: stops sessions idle over ${t.reap.auto_hours}h`
-    : 'Auto-cleanup: off';
+  // reflect the persisted reaper config, but never clobber a field the admin is editing right now
+  const rc=t.reap||{};
+  const setIf=(id,val)=>{ const el=$(id); if(el && document.activeElement!==el) el.value=val; };
+  if(document.activeElement!==$('reapEnabled')) $('reapEnabled').checked=!!rc.enabled;
+  setIf('reapHours', rc.hours); setIf('reapInterval', rc.interval_min);
   const rows=t.sessions||[]; const box=$('sessRows'); box.innerHTML='';
   let totMem=0, nRun=0;
   rows.forEach(s=>{
@@ -1044,6 +1050,23 @@ async function doReap(dry){
 $('reapDry').onclick=()=>doReap(true);
 $('reapNow').onclick=()=>doReap(false);
 $('sessRefresh').onclick=()=>loadAdminSessions();
+async function saveReapConfig(){
+  const body={enabled:$('reapEnabled').checked,
+              hours:parseFloat($('reapHours').value)||6,
+              interval_min:parseFloat($('reapInterval').value)||30};
+  $('reapStatus').textContent='saving…';
+  try{
+    const r=await fetch('/api/admin/reap-config',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); $('reapStatus').textContent='error: '+(e.detail||r.status); return; }
+    const c=(await r.json()).reap;
+    $('reapStatus').textContent = c.enabled ? `auto-cleanup on · idle over ${c.hours}h, every ${c.interval_min}m` : 'auto-cleanup off';
+  }catch(e){ $('reapStatus').textContent='network error'; }
+}
+// always persist (even while disabled) so the threshold the admin sets sticks and the 5s poll
+// never reverts it; the manual Preview/Stop-idle buttons read the same reapHours field
+$('reapEnabled').onchange=saveReapConfig;
+$('reapHours').onchange=saveReapConfig;
+$('reapInterval').onchange=saveReapConfig;
 
 // ---------- new-session modal
 let _editSession=null;   // null = create mode; a session object = edit mode

@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import mounts_store, settings_store, userauth
+from . import appconfig, mounts_store, settings_store, userauth
 from .manager import Manager, _email_slug, ttyd_credential
 from .session import Session
 
@@ -29,18 +29,19 @@ TTYD_PORT = 7681
 # the browser Web Speech API when this is unset or unreachable
 STT_UPSTREAM = os.environ.get("STT_UPSTREAM", "").rstrip("/")
 
-# Idle-session reaping: stop containers that have been inactive this long to free RAM/CPU (the
-# workspace + transcript persist; the session restarts on the next message). 0 = auto-reaper off
-# (the admin "Stop idle now" button still works). Interval = how often the background sweep runs.
-IDLE_REAP_HOURS = float(os.environ.get("CCCHAT_IDLE_REAP_HOURS", "0") or 0)
-IDLE_REAP_INTERVAL_MIN = float(os.environ.get("CCCHAT_IDLE_REAP_INTERVAL_MIN", "30") or 30)
-
-
+# Idle-session reaping: a background sweep stops containers idle beyond a threshold to free RAM/CPU
+# (the workspace + transcript persist; the session restarts on the next message). The loop ALWAYS
+# runs and re-reads appconfig each cycle, so the admin can toggle it / change the threshold + sweep
+# interval live from Settings → Sessions with no restart (env vars seed the initial defaults).
 async def _idle_reaper_loop():
     while True:
-        await asyncio.sleep(IDLE_REAP_INTERVAL_MIN * 60)
+        cfg = appconfig.get_reap()
+        await asyncio.sleep(cfg["interval_min"] * 60)
+        cfg = appconfig.get_reap()                     # re-read after the sleep (may have changed)
+        if not cfg["enabled"]:
+            continue
         try:
-            reaped = await _to_thread(mgr.reap_idle, int(IDLE_REAP_HOURS * 3600))
+            reaped = await _to_thread(mgr.reap_idle, int(cfg["hours"] * 3600))
             for r in reaped:
                 _teardown_live(r["sid"])
         except Exception:
@@ -49,12 +50,11 @@ async def _idle_reaper_loop():
 
 @asynccontextmanager
 async def _lifespan(_app):
-    task = asyncio.create_task(_idle_reaper_loop()) if IDLE_REAP_HOURS > 0 else None
+    task = asyncio.create_task(_idle_reaper_loop())
     try:
         yield
     finally:
-        if task:
-            task.cancel()
+        task.cancel()
 
 
 app = FastAPI(title="ccchat", lifespan=_lifespan)
@@ -267,8 +267,17 @@ async def admin_sessions(request: Request):
     if not _is_admin(current_user(request)):
         raise HTTPException(403, "admin only")
     rows = await _to_thread(mgr.admin_overview)
-    return {"sessions": rows,
-            "reap": {"auto_hours": IDLE_REAP_HOURS, "interval_min": IDLE_REAP_INTERVAL_MIN}}
+    return {"sessions": rows, "reap": appconfig.get_reap()}
+
+
+@app.put("/api/admin/reap-config")
+async def admin_reap_config(request: Request):
+    if not _is_admin(current_user(request)):
+        raise HTTPException(403, "admin only")
+    body = await request.json()
+    cfg = await _to_thread(appconfig.set_reap, body.get("enabled"),
+                           body.get("hours"), body.get("interval_min"))
+    return {"reap": cfg}
 
 
 @app.post("/api/admin/sessions/{sid}/stop")
