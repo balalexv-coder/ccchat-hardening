@@ -111,7 +111,10 @@ async def _do_notify(sess: dict, ev: dict):
         title, body = name, f"Session needs attention: {ev.get('reason') or 'blocked'}."
     else:
         return
-    payload = {"title": title, "body": body, "sid": sid, "tag": f"{sid}:{kind}"}
+    # unique tag per event: a stable tag (sid:kind) makes iOS silently REPLACE the previous
+    # notification without re-alerting (renotify is unreliable on iOS), so only the first completion
+    # per session would buzz. A unique tag makes every completion show its own banner.
+    payload = {"title": title, "body": body, "sid": sid, "tag": f"{sid}:{kind}:{int(time.time())}"}
     skip = _watching_endpoints(sid)                  # devices currently looking → chime, don't buzz
     _LOG.info("[notify] sid=%s kind=%s subs=%d watching=%d", sid, kind, len(subs), len(skip))
     try:
