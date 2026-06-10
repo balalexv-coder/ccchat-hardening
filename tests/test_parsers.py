@@ -134,61 +134,6 @@ def test_parse_line_hides_askuserquestion_tool_use():
     assert "tool-1" in s._hidden_tool_ids
 
 
-def test_context_from_pane_extracts_prose_above_widget():
-    s = make_session()
-    pane = [
-        "❯ what shall we pick?",
-        "",
-        "● One container serves both chat-dev and cowork.",
-        "  So you cannot drop one domain alone.",
-        "",
-        "  ☐ cowork",
-        "  What do we do?",
-        "  1. Drop both",
-        "     both domains gone",
-        "  2. Keep cowork",
-        "  Enter to select · Esc to cancel",
-    ]
-    qi = pane.index("  What do we do?")
-    ctx = s._context_from_pane(pane, qi)
-    assert ctx == ("One container serves both chat-dev and cowork.\n"
-                   "So you cannot drop one domain alone.")
-
-
-def test_context_from_pane_empty_when_no_prose():
-    s = make_session()
-    pane = ["❯ ask me", "  ☐ H", "  Q?", "  1. a", "  Enter to select"]
-    assert s._context_from_pane(pane, pane.index("  Q?")) == ""
-
-
-def test_parse_aq_answers():
-    txt = 'Your questions have been answered: "Pick a fruit"="Apple", "Size"="Large". Continue.'
-    assert Session._parse_aq_answers(txt) == {"Pick a fruit": "Apple", "Size": "Large"}
-
-
-def test_askuserquestion_tool_use_then_result_emits_choice_from_jsonl():
-    s = make_session()
-    # tool_use carries the questions -> stashed, emits nothing yet (the prompt text precedes it)
-    tu = {"type": "assistant", "message": {"role": "assistant", "content": [
-        {"type": "tool_use", "name": "AskUserQuestion", "id": "tool-9", "input": {"questions": [
-            {"question": "Pick a fruit", "multiSelect": False, "options": [
-                {"label": "Apple", "description": "red"}, {"label": "Pear", "description": "green"}]},
-        ]}}]}}
-    assert s._parse_line(tu) is None
-    assert s._aq_pending.get("tool-9")
-    # the tool_result (the answer) -> emit the answered choice FROM the transcript, in order
-    tr = {"type": "user", "message": {"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "tool-9",
-         "content": 'Your questions have been answered: "Pick a fruit"="Apple".'}]}}
-    out = s._parse_line(tr)
-    assert isinstance(out, list) and len(out) == 1
-    ev = out[0]
-    assert ev["kind"] == "choice" and ev["from_jsonl"] is True
-    assert ev["question"] == "Pick a fruit"
-    assert ev["options"] == ["Apple", "Pear"] and ev["answer"] == "Apple"
-    assert "tool-9" not in s._aq_pending   # consumed
-
-
 # ---------- _fire_compact (#9) ----------
 
 def test_fire_compact_keeps_ref_and_dedupes():

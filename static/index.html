@@ -201,9 +201,6 @@
   .wikichip{align-self:center;background:var(--chip);border:1px solid var(--chip-line);color:var(--muted);border-radius:14px;padding:5px 14px;font-size:12px}
   .choice{align-self:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;max-width:90%;display:flex;flex-direction:column;gap:7px}
   .choice .cq{font-size:14px;margin-bottom:3px}
-  /* live context scraped from the pane above the widget — what you're deciding on, shown pre-answer */
-  .choice .ccontext{font-size:12px;color:var(--muted);white-space:pre-wrap;line-height:1.45;margin-bottom:8px;
-    max-height:200px;overflow:auto;border-left:2px solid var(--line);padding-left:8px}
   .choice .cgrp{font-size:11px;color:var(--muted);margin-bottom:2px}
   .choice .cbtn{text-align:left;background:var(--code-bg);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:9px 12px;font-size:14px;cursor:pointer}
   .choice .cbtn:hover{background:var(--hover);border-color:var(--accent)}
@@ -211,10 +208,6 @@
   .choice .cbtn .cdesc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.35;white-space:normal}
   .choice .cbtn.on{border-color:var(--ok);color:var(--ok)}
   .choice .cbtn.on .cdesc{color:var(--ok);opacity:.8}
-  /* answered choice rendered from the transcript — static, non-interactive (just a record) */
-  .choice .cbtn.done{cursor:default;opacity:.92}
-  .choice .cbtn.done:hover{background:var(--code-bg);border-color:var(--line)}
-  .choice .cbtn.done.on:hover{border-color:var(--ok)}
   .choice .ccustom-toggle{align-self:flex-start;background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:2px 0;text-decoration:underline}
   .choice .ccustom-toggle:hover{color:var(--accent)}
   .choice .ccustom-wrap{display:flex;flex-direction:column;gap:7px}
@@ -806,7 +799,7 @@ function renameSession(s){ openSessionModal(s); }   // edit uses the full create
 function openSession(s){
   cur=s; title.textContent=s.name; localStorage.setItem('lastSid',s.id); renderSessions(); closeDrawer();
   $('empty').style.display='none'; $('composerWrap').style.display='block';
-  log.querySelectorAll('.msg').forEach(e=>e.remove()); pendingChoice=null; renderedChoices.clear(); _answeredTmux=[];
+  log.querySelectorAll('.msg').forEach(e=>e.remove()); pendingChoice=null; renderedChoices.clear();
   if(todoEl){todoEl.remove();todoEl=null;}   // drop the previous session's checklist
   busyStop(); _busy=false;   // reset indicator; connect() re-shows it if this session is busy
   _sendQ=[]; renderQueue(); loadIdeas(s.id);   // drop prev session's queue; pull THIS session's parked ideas from the server
@@ -1336,8 +1329,6 @@ $('mOk').onclick=async()=>{
 let pendingChoice=null;  // the unanswered choice widget is kept pinned to the bottom
 let renderedChoices=new Set();  // choice ids already drawn — the backend scrapes the live tmux
                                 // widget, so guard against rendering the same one twice (stale dup)
-let _answeredTmux=[];           // live tmux choice boxes the user just answered, awaiting their
-                                // authoritative JSONL counterpart (which supersedes + repositions them)
 function place(el){const anchor=(pendingChoice&&pendingChoice.parentNode&&el!==pendingChoice)?pendingChoice:document.getElementById('activity');log.insertBefore(el,anchor)}
 function bubble(cls,text){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;place(d);scroll();return d}
 function userBubble(text){
@@ -1412,9 +1403,6 @@ function choiceButtons(ev){
   // a poll after being answered, or is replayed on reconnect) — never draw the same choice twice.
   if(ev.id){ if(renderedChoices.has(ev.id)) return; renderedChoices.add(ev.id); }
   const box=document.createElement('div'); box.className='msg choice';
-  // claude's prose for this turn, scraped live from the pane above the widget — so you can read the
-  // context you're deciding on WHILE the choice is pending (before the clean markdown is flushed).
-  if(ev.context){const cx=document.createElement('div');cx.className='ccontext';cx.textContent=ev.context;box.appendChild(cx)}
   if(ev.group_total>1){const g=document.createElement('div');g.className='cgrp';
     g.textContent='Question '+((ev.group_idx||0)+1)+' of '+ev.group_total; box.appendChild(g)}
   if(ev.question){const q=document.createElement('div');q.className='cq';q.textContent=ev.question;box.appendChild(q)}
@@ -1453,27 +1441,6 @@ function choiceButtons(ev){
   place(box); scroll();
   pendingChoice=box;           // ...then stays pinned there; later messages insert above it until answered
 }
-// Authoritative, answered choice rendered FROM the JSONL transcript (kind:choice, from_jsonl). It
-// arrives right after the prompt text that preceded it, so it lands in the correct order (the live
-// tmux widget came in too early, before that text was flushed). It also makes answered choices
-// survive a reload (the live widget is gone by then). If a live widget for it is still on screen
-// (we just answered it this turn), remove that transient box — this one supersedes it.
-function renderAnsweredChoice(ev){
-  if(ev.id){ if(renderedChoices.has(ev.id)) return; renderedChoices.add(ev.id); }
-  const old=_answeredTmux.shift(); if(old&&old.parentNode) old.remove();   // FIFO: drop the live box it replaces
-  const box=document.createElement('div'); box.className='msg choice answered';
-  if(ev.question){const q=document.createElement('div');q.className='cq';q.textContent=ev.question;box.appendChild(q);}
-  const opts=ev.options||[], descs=ev.descriptions||[];
-  const picked=new Set(String(ev.answer||'').split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean));
-  opts.forEach((opt,i)=>{
-    const b=document.createElement('div'); b.className='cbtn done'+(picked.has(opt)?' on':'');
-    const lab=document.createElement('div'); lab.className='clab'; lab.textContent=opt; b.appendChild(lab);
-    if(descs[i]){const d=document.createElement('div'); d.className='cdesc'; d.textContent=descs[i]; b.appendChild(d);}
-    box.appendChild(b);
-  });
-  if(ev.answer){const ch=document.createElement('div'); ch.className='cchosen'; ch.textContent='→ '+ev.answer; box.appendChild(ch);}
-  place(box); scroll();
-}
 function sendChoice(ev,indices,labels,box){
   if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'choice_answer',id:ev.id,answer:indices.join(','),multi:!!ev.multi}));
   pendingChoice=null;          // answered -> unpin so claude's reply lands below the choice
@@ -1481,7 +1448,6 @@ function sendChoice(ev,indices,labels,box){
   box.querySelectorAll('button,input').forEach(e=>e.disabled=true);
   const chosen=document.createElement('div'); chosen.className='cchosen'; chosen.textContent='→ '+(labels.join(', ')||'(none)');
   box.appendChild(chosen);
-  _answeredTmux.push(box);   // the JSONL version (with correct position) will supersede this one
 }
 function sendCustom(ev,text,box){
   if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'choice_answer',id:ev.id,custom:text}));
@@ -1490,7 +1456,6 @@ function sendCustom(ev,text,box){
   box.querySelectorAll('button,input').forEach(e=>e.disabled=true);
   const chosen=document.createElement('div'); chosen.className='cchosen'; chosen.textContent='→ '+text;
   box.appendChild(chosen);
-  _answeredTmux.push(box);   // the JSONL version (with correct position) will supersede this one
 }
 
 // ---------- activity indicator (what claude is doing + elapsed + stop)
@@ -1555,10 +1520,7 @@ function handle(ev){switch(ev.kind){
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;
   case 'done':_busy=false;busyStop();loadCommands();flushQueue();chime();break;
   case 'wiki':wikiChip(ev);break;
-  case 'choice':
-    if(ev.from_jsonl){ renderAnsweredChoice(ev); }            // answered, from transcript — correct position + survives reload
-    else { busyStop(); choiceButtons(ev); chime(); }          // live tmux widget — awaiting your click
-    break;
+  case 'choice':busyStop();choiceButtons(ev);chime();break;  // awaiting user click — not 'thinking'
   case 'user':userBubble(ev.text);break;
   case 'assistant':busyWhat('Thinking…');assistantBubble(ev.text);break;
   case 'thinking':busyWhat('Reasoning…');thinking(ev.text);break;
@@ -1605,7 +1567,7 @@ function connect(){
     // doesn't duplicate the history (and reset the busy flag so queued sends aren't blocked)
     log.querySelectorAll('.msg').forEach(e=>e.remove());
     if(todoEl){todoEl.remove();todoEl=null;}
-    pendingChoice=null; renderedChoices.clear(); _answeredTmux=[];
+    pendingChoice=null; renderedChoices.clear();
     _busy=false; busyStop();
     pingActive();   // mark this session as foreground-watched (suppresses OS push while you look)
     startHeartbeat();

@@ -45,9 +45,6 @@ class Session:
                                             # the pane — suppress re-emit until it clears (no stale dup)
         self._await_done = False            # a turn was sent; watchdog should emit done when idle
         self._hidden_tool_ids = set()       # tool_use ids whose tool_result must be hidden too
-        self._aq_pending = {}               # AskUserQuestion tool_use id -> input.questions, so when
-                                            # its tool_result lands we emit the choice(s) FROM the
-                                            # transcript (correct order vs the prompt text, + reload)
         self._tasks_mtime = 0               # newest mtime in the tasks/ snapshot dir we've emitted
                                             # (ToolSearch + ask_user_choice: rendered as buttons / noise)
 
@@ -311,34 +308,9 @@ class Session:
             if isinstance(cont, list):
                 for c in cont:
                     if isinstance(c, dict) and c.get("type") == "tool_result":
-                        tuid = c.get("tool_use_id")
-                        # AskUserQuestion: its tool_use stashed the questions; now that it's answered,
-                        # emit the choice(s) FROM the transcript. They land right after the prompt text
-                        # that preceded them (live order is text -> tool_use -> result), and because
-                        # they come from JSONL they also survive a reload (the tmux widget is gone then).
-                        if tuid in self._aq_pending:
-                            qs = self._aq_pending.pop(tuid)
-                            out = c.get("content")
-                            if isinstance(out, list):
-                                out = " ".join(x.get("text", "") for x in out if isinstance(x, dict))
-                            answers = self._parse_aq_answers(str(out or ""))
-                            evs = []
-                            for qi, q in enumerate(qs):
-                                if not isinstance(q, dict):
-                                    continue
-                                opts = [o.get("label", "") for o in (q.get("options") or []) if isinstance(o, dict)]
-                                descs = [o.get("description", "") for o in (q.get("options") or []) if isinstance(o, dict)]
-                                qtext = q.get("question", "")
-                                evs.append({
-                                    "kind": "choice", "from_jsonl": True,
-                                    "id": f"jq:{tuid}:{qi}",
-                                    "question": qtext, "options": opts, "descriptions": descs,
-                                    "multi": bool(q.get("multiSelect")),
-                                    "answer": answers.get(qtext, ""),
-                                })
-                            return evs or None
-                        # results of hidden tools (ToolSearch) are noise — the search is internal
-                        if tuid in self._hidden_tool_ids:
+                        # results of hidden tools (ToolSearch / ask_user_choice) are noise:
+                        # the button widget already shows the choice, the search is internal
+                        if c.get("tool_use_id") in self._hidden_tool_ids:
                             return None
                         out = c.get("content")
                         if isinstance(out, list):
@@ -371,13 +343,7 @@ class Session:
                     # AskUserQuestion (built-in choice widget) is surfaced as buttons from the live
                     # tmux pane while pending; its resolved tool_use/result in JSONL is just noise.
                     # ToolSearch is internal deferred-tool lookup — also hidden.
-                    if name == "AskUserQuestion":
-                        self._hidden_tool_ids.add(c.get("id"))   # hide the raw tool echo
-                        qs = (c.get("input") or {}).get("questions")
-                        if isinstance(qs, list) and qs:          # emit choice(s) when its result lands
-                            self._aq_pending[c.get("id")] = qs
-                        continue
-                    if name == "ToolSearch":
+                    if name in ("AskUserQuestion", "ToolSearch"):
                         self._hidden_tool_ids.add(c.get("id"))
                         continue
                     inp = c.get("input") or {}
@@ -401,12 +367,6 @@ class Session:
                     summary = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
                     return {"kind": "tool_use", "name": name, "text": str(summary)[:400]}
         return None
-
-    @staticmethod
-    def _parse_aq_answers(text):
-        """Parse 'Your questions have been answered: "Q"="A", "Q2"="A2". …' -> {question: answer}."""
-        return {m.group(1): m.group(2)
-                for m in re.finditer(r'"([^"]+)"\s*=\s*"([^"]*)"', text or "")}
 
     _OPT_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s*(?:\[([ ✔xX])\]\s*)?(.+?)\s*$")
 
@@ -450,10 +410,9 @@ class Session:
                 first_opt_line = idx; break
         if first_opt_line is None:
             return None
-        q_abs = start_i + first_opt_line          # default: the question sits just above the first option
         for j in range(first_opt_line - 1, -1, -1):
             if lines[j].strip():
-                question = lines[j].strip(); q_abs = start_i + j; break
+                question = lines[j].strip(); break
         # each option is followed by an indented description line (sometimes wrapped over several);
         # collect them so the UI can show what each choice MEANS, not just its bare label. `collecting`
         # is the index of the option currently accumulating description text, or None to drop it.
@@ -489,44 +448,7 @@ class Session:
         return {"kind": "choice", "id": sig,
                 "question": question, "options": options, "descriptions": descriptions,
                 "multi": has_checkbox, "allow_custom": allow_custom,
-                "group_idx": group_done, "group_total": group_total,
-                # claude's prose for this turn, scraped from the pane ABOVE the widget, so the user
-                # sees the context they're deciding on WHILE the widget is pending (the JSONL with the
-                # clean markdown isn't written until after the answer). Best-effort; "" if none.
-                "context": self._context_from_pane(all_lines, q_abs)}
-
-    def _context_from_pane(self, all_lines, q_index):
-        """Claude's most recent assistant prose, scraped from the tmux pane between the user's last
-        prompt (`❯ …`) and the choice widget. Terminal-rendered (wrapped/de-styled), best-effort —
-        replaced by the clean markdown once the JSONL flushes after the answer. Returns "" if none."""
-        start = 0
-        for i in range(min(q_index, len(all_lines)) - 1, -1, -1):
-            if all_lines[i].lstrip().startswith("❯"):
-                start = i + 1
-                break
-        out = []
-        for ln in all_lines[start:q_index]:
-            st = ln.strip()
-            if not st:
-                if out and out[-1] != "":
-                    out.append("")                       # keep paragraph breaks
-                continue
-            if st.startswith("❯") or st.startswith(">"):
-                continue
-            if "☐" in st or "☒" in st:                    # the widget's header chip / tab bar
-                continue
-            if set(st) <= set("─—-│ "):                   # separator rules
-                continue
-            if (st.startswith("⎿") or "bypass permissions" in st
-                    or "esc to interrupt" in st.lower() or "Baked for" in st
-                    or st.startswith("Tip:") or "Calculating" in st or "Philosophising" in st
-                    or "Sautéed" in st or st in ("Esc to cancel", "Enter to confirm")
-                    or st.startswith("Ran ") or st.startswith("Running ")
-                    or st.startswith("User answered") or st.startswith("Background command")):
-                continue
-            st = re.sub(r"^[●○•*✻✽✶]\s*", "", st)          # strip the assistant/spinner bullet
-            out.append(st)
-        return "\n".join(out).strip()[:2000]
+                "group_idx": group_done, "group_total": group_total}
 
     def _choice_from_pane(self, pane: str):
         """pump's view: parse + dedup so each distinct group is streamed to subscribers only once."""
@@ -698,9 +620,8 @@ class Session:
                                             q.put_nowait({"kind": "context", "tokens": ctx})
                                 ev = self._parse_line(d)
                                 if ev:
-                                    for _e in (ev if isinstance(ev, list) else [ev]):
-                                        for q in list(self._subscribers):
-                                            q.put_nowait(_e)
+                                    for q in list(self._subscribers):
+                                        q.put_nowait(ev)
                     except OSError:
                         pass
                 await asyncio.sleep(0.4)
@@ -772,7 +693,7 @@ class Session:
                             continue
                         ev = self._parse_line(d)
                         if ev:
-                            evs.extend(ev if isinstance(ev, list) else [ev])
+                            evs.append(ev)
                     self._jsonl_pos = f.tell()
                 self.jsonl_path = path
                 self._pos_by_file[path] = self._jsonl_pos   # remember position for resume (#8)
