@@ -894,8 +894,9 @@ async def term_asset(sid: str, path: str, request: Request):
 # on every upstream request, so the browser never holds it and a co-tenant container that hits the
 # editor port directly (no token) is rejected. Auth is the app session, like the chat/terminal.
 # OpenVSCode authenticates by a `vscode-tkn` cookie (the ?tkn= query is just a one-time handshake
-# that sets it and 302-redirects). We inject the cookie on every UPSTREAM request and never forward
-# the token to the browser (strip Set-Cookie) — so the secret lives only server-side.
+# that sets it + 302s). We inject the cookie on every UPSTREAM request, and the proxy itself sets the
+# same cookie on the workbench document so the client-side JS can read it for the management-WS auth
+# handshake (without it the WS is refused "auth mismatch"). The token never appears in any URL.
 _CODE_HOP = {"host", "cookie", "set-cookie", "connection", "content-length", "content-encoding",
              "transfer-encoding", "keep-alive"}
 
@@ -935,8 +936,13 @@ async def code_http(sid: str, path: str, request: Request):
     except httpx.HTTPError:
         raise HTTPException(502, "editor not reachable")
     out = {k: v for k, v in up.headers.items() if k.lower() not in _CODE_HOP}
-    return Response(up.content, status_code=up.status_code, headers=out,
+    resp = Response(up.content, status_code=up.status_code, headers=out,
                     media_type=up.headers.get("content-type"))
+    # give the browser the connection token as a (JS-readable) cookie on the workbench document, so
+    # the editor's management WebSocket can authenticate. Scoped to this session's editor path.
+    if up.headers.get("content-type", "").startswith("text/html"):
+        resp.set_cookie("vscode-tkn", code_token(sid), path=f"/code/{sid}/", samesite="lax")
+    return resp
 
 
 @app.websocket("/code/{sid}/{path:path}")
