@@ -665,6 +665,11 @@ async def ws(websocket: WebSocket, sid: str):
                 # already busy before we connected — we don't know when it started, so the UI
                 # shows a plain "…" (no fake timer) until the next event arrives.
                 await websocket.send_json({"kind": "busy", "ongoing": True})
+                # arm the watchdog: mark a turn as in flight so the pump emits 'done' (clearing the
+                # indicator) once claude goes idle. Without this, a fresh pump (e.g. after an app
+                # redeploy or reconnect mid-turn) that never observes its own busy→idle edge would
+                # leave the "Thinking…" indicator stuck on forever.
+                s._await_done = True
             # replay a pending AskUserQuestion widget (not in the JSONL) so the choice buttons
             # survive reconnects / tab switches instead of being lost after pump emitted them once.
             chev = s._parse_choice(pane)
