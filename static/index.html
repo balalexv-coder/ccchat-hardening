@@ -707,6 +707,18 @@ if('serviceWorker' in navigator){
   }).catch(()=>{});
 }
 
+// Restore THIS device's push endpoint on boot — not only when Settings is opened. The foreground
+// heartbeat (pingActive) carries this endpoint so the server knows "this device is watching" and
+// suppresses its own push for it. Without this, reopening the PWA left _pushEndpoint=null, the
+// active ping went out empty, the server saw watching=0, and the phone buzzed while you were
+// literally looking at the chat. (defs below are initialized by the time 'load' fires.)
+window.addEventListener("load", ()=>{
+  if(!(("serviceWorker" in navigator) && ("PushManager" in window))) return;
+  navigator.serviceWorker.ready.then(()=>_curSub()).then(sub=>{
+    if(sub){ _pushEndpoint=sub.endpoint; _notifOn=true; pingActive(); }
+  }).catch(()=>{});
+});
+
 // PWA install: we DON'T intercept beforeinstallprompt — letting it through makes Chrome show
 // its native install icon in the address bar (the Open in app affordance), like other PWAs.
 let _deferredPrompt=null;
