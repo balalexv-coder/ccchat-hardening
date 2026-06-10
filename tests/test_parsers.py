@@ -134,6 +134,34 @@ def test_parse_line_hides_askuserquestion_tool_use():
     assert "tool-1" in s._hidden_tool_ids
 
 
+def test_parse_aq_answers():
+    txt = 'Your questions have been answered: "Pick a fruit"="Apple", "Size"="Large". Continue.'
+    assert Session._parse_aq_answers(txt) == {"Pick a fruit": "Apple", "Size": "Large"}
+
+
+def test_askuserquestion_tool_use_then_result_emits_choice_from_jsonl():
+    s = make_session()
+    # tool_use carries the questions -> stashed, emits nothing yet (the prompt text precedes it)
+    tu = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "AskUserQuestion", "id": "tool-9", "input": {"questions": [
+            {"question": "Pick a fruit", "multiSelect": False, "options": [
+                {"label": "Apple", "description": "red"}, {"label": "Pear", "description": "green"}]},
+        ]}}]}}
+    assert s._parse_line(tu) is None
+    assert s._aq_pending.get("tool-9")
+    # the tool_result (the answer) -> emit the answered choice FROM the transcript, in order
+    tr = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "tool-9",
+         "content": 'Your questions have been answered: "Pick a fruit"="Apple".'}]}}
+    out = s._parse_line(tr)
+    assert isinstance(out, list) and len(out) == 1
+    ev = out[0]
+    assert ev["kind"] == "choice" and ev["from_jsonl"] is True
+    assert ev["question"] == "Pick a fruit"
+    assert ev["options"] == ["Apple", "Pear"] and ev["answer"] == "Apple"
+    assert "tool-9" not in s._aq_pending   # consumed
+
+
 # ---------- _fire_compact (#9) ----------
 
 def test_fire_compact_keeps_ref_and_dedupes():

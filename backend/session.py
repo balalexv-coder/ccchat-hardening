@@ -45,6 +45,9 @@ class Session:
                                             # the pane — suppress re-emit until it clears (no stale dup)
         self._await_done = False            # a turn was sent; watchdog should emit done when idle
         self._hidden_tool_ids = set()       # tool_use ids whose tool_result must be hidden too
+        self._aq_pending = {}               # AskUserQuestion tool_use id -> input.questions, so when
+                                            # its tool_result lands we emit the choice(s) FROM the
+                                            # transcript (correct order vs the prompt text, + reload)
         self._tasks_mtime = 0               # newest mtime in the tasks/ snapshot dir we've emitted
                                             # (ToolSearch + ask_user_choice: rendered as buttons / noise)
 
@@ -308,9 +311,34 @@ class Session:
             if isinstance(cont, list):
                 for c in cont:
                     if isinstance(c, dict) and c.get("type") == "tool_result":
-                        # results of hidden tools (ToolSearch / ask_user_choice) are noise:
-                        # the button widget already shows the choice, the search is internal
-                        if c.get("tool_use_id") in self._hidden_tool_ids:
+                        tuid = c.get("tool_use_id")
+                        # AskUserQuestion: its tool_use stashed the questions; now that it's answered,
+                        # emit the choice(s) FROM the transcript. They land right after the prompt text
+                        # that preceded them (live order is text -> tool_use -> result), and because
+                        # they come from JSONL they also survive a reload (the tmux widget is gone then).
+                        if tuid in self._aq_pending:
+                            qs = self._aq_pending.pop(tuid)
+                            out = c.get("content")
+                            if isinstance(out, list):
+                                out = " ".join(x.get("text", "") for x in out if isinstance(x, dict))
+                            answers = self._parse_aq_answers(str(out or ""))
+                            evs = []
+                            for qi, q in enumerate(qs):
+                                if not isinstance(q, dict):
+                                    continue
+                                opts = [o.get("label", "") for o in (q.get("options") or []) if isinstance(o, dict)]
+                                descs = [o.get("description", "") for o in (q.get("options") or []) if isinstance(o, dict)]
+                                qtext = q.get("question", "")
+                                evs.append({
+                                    "kind": "choice", "from_jsonl": True,
+                                    "id": f"jq:{tuid}:{qi}",
+                                    "question": qtext, "options": opts, "descriptions": descs,
+                                    "multi": bool(q.get("multiSelect")),
+                                    "answer": answers.get(qtext, ""),
+                                })
+                            return evs or None
+                        # results of hidden tools (ToolSearch) are noise — the search is internal
+                        if tuid in self._hidden_tool_ids:
                             return None
                         out = c.get("content")
                         if isinstance(out, list):
@@ -343,7 +371,13 @@ class Session:
                     # AskUserQuestion (built-in choice widget) is surfaced as buttons from the live
                     # tmux pane while pending; its resolved tool_use/result in JSONL is just noise.
                     # ToolSearch is internal deferred-tool lookup — also hidden.
-                    if name in ("AskUserQuestion", "ToolSearch"):
+                    if name == "AskUserQuestion":
+                        self._hidden_tool_ids.add(c.get("id"))   # hide the raw tool echo
+                        qs = (c.get("input") or {}).get("questions")
+                        if isinstance(qs, list) and qs:          # emit choice(s) when its result lands
+                            self._aq_pending[c.get("id")] = qs
+                        continue
+                    if name == "ToolSearch":
                         self._hidden_tool_ids.add(c.get("id"))
                         continue
                     inp = c.get("input") or {}
@@ -367,6 +401,12 @@ class Session:
                     summary = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
                     return {"kind": "tool_use", "name": name, "text": str(summary)[:400]}
         return None
+
+    @staticmethod
+    def _parse_aq_answers(text):
+        """Parse 'Your questions have been answered: "Q"="A", "Q2"="A2". …' -> {question: answer}."""
+        return {m.group(1): m.group(2)
+                for m in re.finditer(r'"([^"]+)"\s*=\s*"([^"]*)"', text or "")}
 
     _OPT_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s*(?:\[([ ✔xX])\]\s*)?(.+?)\s*$")
 
@@ -620,8 +660,9 @@ class Session:
                                             q.put_nowait({"kind": "context", "tokens": ctx})
                                 ev = self._parse_line(d)
                                 if ev:
-                                    for q in list(self._subscribers):
-                                        q.put_nowait(ev)
+                                    for _e in (ev if isinstance(ev, list) else [ev]):
+                                        for q in list(self._subscribers):
+                                            q.put_nowait(_e)
                     except OSError:
                         pass
                 await asyncio.sleep(0.4)
@@ -693,7 +734,7 @@ class Session:
                             continue
                         ev = self._parse_line(d)
                         if ev:
-                            evs.append(ev)
+                            evs.extend(ev if isinstance(ev, list) else [ev])
                     self._jsonl_pos = f.tell()
                 self.jsonl_path = path
                 self._pos_by_file[path] = self._jsonl_pos   # remember position for resume (#8)
