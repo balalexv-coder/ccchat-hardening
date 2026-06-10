@@ -333,6 +333,15 @@
   #usersTable .udate{color:var(--muted);font-size:13px}
   #usersTable .uapp{display:flex;justify-content:center}
   #usersTable .uchk{width:18px;height:18px;cursor:pointer}
+  .srow-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0 16px}
+  .srow-controls label{font-size:13px;color:var(--txt)}
+  #sessTable .srow{display:grid;grid-template-columns:1.6fr 1fr 5.5rem 5rem 4rem 5rem 4rem;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+  #sessTable .shead{color:var(--muted);font-size:12px}
+  #sessTable .sname{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #sessTable .sst-running{color:var(--ok)} #sessTable .sst-stopped{color:var(--muted)} #sessTable .sst-missing{color:var(--warn)}
+  #sessTable .sstop{background:none;border:1px solid var(--line);color:var(--muted);border-radius:5px;font-size:12px;padding:2px 8px;cursor:pointer}
+  #sessTable .sstop:hover{border-color:var(--warn);color:var(--warn)}
+  #sessTable .sstop:disabled{opacity:.35;cursor:default}
   #settingsPage{display:none;position:fixed;inset:0;z-index:30;background:var(--bg);color:var(--txt)}
   #settingsPage.open{display:flex}
   #settingsPage .set-close-top{position:absolute;top:14px;right:18px;z-index:3;background:var(--hover);
@@ -540,6 +549,7 @@
       <button class="set-tab" data-tab="appearance">Appearance</button>
       <button class="set-tab" data-tab="mounts" id="tabMounts" style="display:none">Mounts</button>
       <button class="set-tab" data-tab="users" id="tabUsers" style="display:none">Users</button>
+      <button class="set-tab" data-tab="sessions" id="tabSessions" style="display:none">Sessions</button>
       <div class="spacer"></div>
       <span id="setWho" class="hint" style="padding:0 16px"></span>
     </div>
@@ -611,6 +621,23 @@
           <div id="userRows"></div>
         </div>
         <div class="status" id="usersStatus" style="margin-top:12px"></div>
+      </div>
+      <div class="set-pane" data-pane="sessions">
+        <h3>Sessions &amp; resources</h3>
+        <p class="hint">Every session across all users with live RAM/CPU and idle time. Stopping a
+          session frees its RAM/CPU — the workspace and chat history persist, and it restarts on the
+          next message. <span id="reapAuto"></span></p>
+        <div class="srow-controls">
+          <label>Reap idle over <input type="number" id="reapHours" min="0.25" step="0.25" value="6" style="width:64px"> h</label>
+          <button class="ghost" id="reapDry" type="button">Preview</button>
+          <button class="primary" id="reapNow" type="button">Stop idle now</button>
+          <button class="ghost" id="sessRefresh" type="button" title="Refresh">↻</button>
+          <span class="status" id="reapStatus"></span>
+        </div>
+        <div id="sessTable">
+          <div class="srow shead"><div>Session</div><div>User</div><div>Status</div><div>RAM</div><div>CPU</div><div>Idle</div><div></div></div>
+          <div id="sessRows"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -799,12 +826,13 @@ function closeChat(){
 
 // ---------- settings page (full page with left tabs) + URL routing
 function setTab(name){
-  if(!['account','appearance','mounts','users'].includes(name)) name='account';
+  if(!['account','appearance','mounts','users','sessions'].includes(name)) name='account';
+  if(name==='sessions') startSessPoll(); else stopSessPoll();
   document.querySelectorAll('#settingsPage .set-tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('#settingsPage .set-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane===name));
 }
 document.querySelectorAll('#settingsPage .set-tab').forEach(b=>b.onclick=()=>{ setTab(b.dataset.tab); history.replaceState({},'', '/settings/'+b.dataset.tab); });
-function closeSettings(push){ $('settingsPage').classList.remove('open'); if(push!==false) history.pushState({},'', '/chats'); }
+function closeSettings(push){ stopSessPoll(); $('settingsPage').classList.remove('open'); if(push!==false) history.pushState({},'', '/chats'); }
 $('setCloseTop').onclick=()=>closeSettings();
 async function openSettings(tab,push){
   if(push!==false) history.pushState({},'', '/settings'+(tab&&tab!=='account'?'/'+tab:''));
@@ -819,6 +847,7 @@ async function openSettings(tab,push){
     $('setWho').textContent = s.is_admin ? 'admin' : '';
     $('tabMounts').style.display = s.is_admin ? 'block' : 'none';
     $('tabUsers').style.display = s.is_admin ? 'block' : 'none';
+    $('tabSessions').style.display = s.is_admin ? 'block' : 'none';
     if(s.is_admin){ $('mountStatus').textContent=''; try{ await loadMounts() }catch(e){}
       $('usersStatus').textContent=''; try{ await loadUsers() }catch(e){} }
   }catch(e){}
@@ -927,6 +956,76 @@ async function loadUsers(){
   });
   $('usersStatus').textContent = users.length ? '' : 'no registered users yet';
 }
+
+// admin: session overview + idle reaping
+let _sessPoll=null;
+function fmtIdle(s){
+  if(s==null) return '—';
+  if(s<90) return s+'s';
+  if(s<5400) return Math.round(s/60)+'m';
+  if(s<172800) return (s/3600).toFixed(1)+'h';
+  return Math.round(s/86400)+'d';
+}
+function fmtMem(mb){ return mb==null?'—':(mb>=1024?(mb/1024).toFixed(1)+'G':Math.round(mb)+'M'); }
+async function loadAdminSessions(){
+  let t;
+  try{ const r=await fetch('/api/admin/sessions'); if(!r.ok) throw 0; t=await r.json(); }
+  catch(e){ $('reapStatus').textContent='failed to load'; return; }
+  const auto=t.reap&&t.reap.auto_hours>0;
+  $('reapAuto').textContent = auto
+    ? `Auto-reaping is ON: idle over ${t.reap.auto_hours}h, swept every ${t.reap.interval_min}m.`
+    : 'Auto-reaping is off — set CCCHAT_IDLE_REAP_HOURS to enable a background sweep.';
+  const rows=t.sessions||[]; const box=$('sessRows'); box.innerHTML='';
+  let totMem=0, nRun=0;
+  rows.forEach(s=>{
+    if(s.status==='running'){ nRun++; totMem+=s.mem_mb||0; }
+    const d=document.createElement('div'); d.className='srow';
+    d.innerHTML=`<div class="sname" title="${esc(s.name)}">${esc(s.name)}</div>`+
+      `<div>${esc(s.user)}</div>`+
+      `<div class="sst-${s.status}">${s.status}</div>`+
+      `<div>${fmtMem(s.mem_mb)}</div>`+
+      `<div>${s.cpu_pct==null?'—':s.cpu_pct+'%'}</div>`+
+      `<div>${fmtIdle(s.idle_secs)}</div>`+
+      `<div></div>`;
+    if(s.status==='running'){
+      const b=document.createElement('button'); b.className='sstop'; b.textContent='Stop';
+      b.onclick=async()=>{
+        b.disabled=true; b.textContent='…';
+        try{ await fetch('/api/admin/sessions/'+s.sid+'/stop',{method:'POST'}); }catch(e){}
+        loadAdminSessions();
+      };
+      d.lastElementChild.append(b);
+    }
+    box.append(d);
+  });
+  $('reapStatus').textContent = rows.length
+    ? `${nRun} running · ${fmtMem(totMem)} RAM total`
+    : 'no sessions';
+}
+function startSessPoll(){ if(_sessPoll)return; loadAdminSessions(); _sessPoll=setInterval(loadAdminSessions,5000); }
+function stopSessPoll(){ if(_sessPoll){ clearInterval(_sessPoll); _sessPoll=null; } }
+async function doReap(dry){
+  const hours=parseFloat($('reapHours').value||'0');
+  if(!(hours>0)){ $('reapStatus').textContent='enter idle hours > 0'; return; }
+  $('reapDry').disabled=$('reapNow').disabled=true; $('reapStatus').textContent=dry?'previewing…':'stopping…';
+  try{
+    const r=await fetch('/api/admin/reap',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({idle_hours:hours,dry_run:dry})});
+    const j=await r.json();
+    if(!r.ok){ $('reapStatus').textContent='error: '+(j.detail||r.status); }
+    else{
+      const n=(j.reaped||[]).length;
+      $('reapStatus').textContent = dry
+        ? (n?`${n} session(s) would be stopped: `+j.reaped.map(x=>esc(x.name)).join(', '):'nothing idle that long')
+        : (n?`stopped ${n} idle session(s)`:'nothing idle that long');
+    }
+  }catch(e){ $('reapStatus').textContent='network error'; }
+  $('reapDry').disabled=$('reapNow').disabled=false;
+  if(!dry) loadAdminSessions();
+}
+$('reapDry').onclick=()=>doReap(true);
+$('reapNow').onclick=()=>doReap(false);
+$('sessRefresh').onclick=()=>loadAdminSessions();
 
 // ---------- new-session modal
 let _editSession=null;   // null = create mode; a session object = edit mode

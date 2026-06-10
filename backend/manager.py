@@ -481,6 +481,120 @@ class Manager:
             self.ensure_claude(sess)
             self.ensure_ttyd(sess)
 
+    # ---- admin overview + idle reaping --------------------------------------
+    def find_any(self, sid: str):
+        """Find a session by id across ALL users (admin scope)."""
+        for sessions in _load().values():
+            for s in sessions:
+                if s["id"] == sid:
+                    return s
+        return None
+
+    def _container_states(self) -> dict:
+        """container name -> docker state ('running','exited',…) for ALL containers, one call.
+        A name absent from the map means the container doesn't exist ('missing')."""
+        r = _docker("ps", "-a", "--format", "{{.Names}}\t{{.State}}", timeout=15)
+        out = {}
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                name, _, state = line.partition("\t")
+                if name:
+                    out[name] = state.strip()
+        return out
+
+    @staticmethod
+    def _parse_mem_mb(tok: str) -> float:
+        m = re.match(r"([0-9.]+)\s*([A-Za-z]+)", tok.strip())
+        if not m:
+            return 0.0
+        mul = {"b": 1 / 1048576, "kib": 1 / 1024, "kb": 1 / 1024, "mib": 1, "mb": 1,
+               "gib": 1024, "gb": 1024}.get(m.group(2).lower(), 1)
+        return round(float(m.group(1)) * mul, 1)
+
+    def docker_stats(self) -> dict:
+        """container name -> {'mem_mb','cpu_pct'} for RUNNING containers, in one `docker stats` call
+        (a per-container call would be N docker round-trips on the admin hot path)."""
+        r = _docker("stats", "--no-stream", "--no-trunc",
+                    "--format", "{{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}", timeout=25)
+        out = {}
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) != 3:
+                    continue
+                name, mem, cpu = parts
+                try:
+                    out[name] = {"mem_mb": self._parse_mem_mb(mem.split("/")[0]),
+                                 "cpu_pct": round(float(cpu.strip().rstrip("%") or 0), 1)}
+                except Exception:
+                    pass
+        return out
+
+    def _last_activity(self, sess: dict) -> float:
+        """Newest transcript mtime (epoch secs) for this session, 0 if none. Claude appends to the
+        JSONL as it works (tool calls, results), so this tracks real activity, not just user input."""
+        try:
+            proj = self.local_ws(sess) / ".chome" / "projects"
+            return max((p.stat().st_mtime for p in proj.rglob("*.jsonl")), default=0)
+        except Exception:
+            return 0
+
+    def _pane_busy(self, sess: dict) -> bool:
+        """True if claude is actively working right now (pane shows the interrupt hint). Used as a
+        safety guard so reaping never stops a session mid-task even if its transcript looks idle."""
+        r = _docker("exec", sess["container"], "tmux", "capture-pane", "-t", "main", "-p", timeout=8)
+        return "esc to interrupt" in (r.stdout or "").lower()
+
+    def admin_overview(self) -> list:
+        """Every session across all users with live status + resource usage + idle time. Two docker
+        calls total (ps -a, stats) plus cheap local mtime reads — independent of session count."""
+        states = self.docker_stats_and_states()
+        stats, st_map = states["stats"], states["states"]
+        now = time.time()
+        rows = []
+        for slug, sessions in _load().items():
+            for s in sessions:
+                c = s["container"]
+                state = st_map.get(c)
+                status = "running" if state == "running" else ("missing" if state is None else "stopped")
+                la = self._last_activity(s)
+                u = stats.get(c, {})
+                rows.append({
+                    "sid": s["id"], "name": s.get("name") or s["id"][:8], "user": slug,
+                    "status": status,
+                    "mem_mb": u.get("mem_mb") if status == "running" else None,
+                    "cpu_pct": u.get("cpu_pct") if status == "running" else None,
+                    "idle_secs": int(now - la) if la else None,
+                })
+        rows.sort(key=lambda r: (r["status"] != "running", -(r["mem_mb"] or 0)))
+        return rows
+
+    def docker_stats_and_states(self) -> dict:
+        return {"stats": self.docker_stats(), "states": self._container_states()}
+
+    def reap_idle(self, idle_secs: int, dry_run: bool = False) -> list:
+        """Stop (never delete) RUNNING session containers idle longer than idle_secs and not busy.
+        Stopping frees RAM/CPU; the workspace + transcript persist and the session restarts on the
+        next message. Returns the affected sessions (with the idle time at reap)."""
+        states = self._container_states()
+        now = time.time()
+        reaped = []
+        for slug, sessions in _load().items():
+            for s in sessions:
+                if states.get(s["container"]) != "running":
+                    continue
+                la = self._last_activity(s)
+                idle = now - la if la else None
+                if idle is None or idle < idle_secs:
+                    continue
+                if self._pane_busy(s):           # never reap a session mid-task
+                    continue
+                if not dry_run:
+                    self.stop_container(s)
+                reaped.append({"sid": s["id"], "name": s.get("name") or s["id"][:8],
+                               "user": slug, "idle_secs": int(idle)})
+        return reaped
+
     # ---- context (md layers) -------------------------------------------------
     def _ctx_paths(self, sess: dict):
         """(Global.md, user.md, chat.md, wiki.md) for this session.

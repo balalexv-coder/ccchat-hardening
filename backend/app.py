@@ -5,6 +5,7 @@ so app auth + the admin-approval gate are the only barrier.
 import asyncio
 import datetime
 import json
+from contextlib import asynccontextmanager
 import os
 import re
 import time
@@ -28,7 +29,35 @@ TTYD_PORT = 7681
 # the browser Web Speech API when this is unset or unreachable
 STT_UPSTREAM = os.environ.get("STT_UPSTREAM", "").rstrip("/")
 
-app = FastAPI(title="ccchat")
+# Idle-session reaping: stop containers that have been inactive this long to free RAM/CPU (the
+# workspace + transcript persist; the session restarts on the next message). 0 = auto-reaper off
+# (the admin "Stop idle now" button still works). Interval = how often the background sweep runs.
+IDLE_REAP_HOURS = float(os.environ.get("CCCHAT_IDLE_REAP_HOURS", "0") or 0)
+IDLE_REAP_INTERVAL_MIN = float(os.environ.get("CCCHAT_IDLE_REAP_INTERVAL_MIN", "30") or 30)
+
+
+async def _idle_reaper_loop():
+    while True:
+        await asyncio.sleep(IDLE_REAP_INTERVAL_MIN * 60)
+        try:
+            reaped = await _to_thread(mgr.reap_idle, int(IDLE_REAP_HOURS * 3600))
+            for r in reaped:
+                _teardown_live(r["sid"])
+        except Exception:
+            pass
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    task = asyncio.create_task(_idle_reaper_loop()) if IDLE_REAP_HOURS > 0 else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+
+
+app = FastAPI(title="ccchat", lifespan=_lifespan)
 STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
 mgr = Manager()
 
@@ -230,6 +259,44 @@ async def admin_approve_user(username: str, request: Request):
     except userauth.AuthError as e:
         raise HTTPException(404, str(e))
     return {"username": username, "approved": approved}
+
+
+# ----- admin: session overview + idle reaping (resource visibility / cleanup)
+@app.get("/api/admin/sessions")
+async def admin_sessions(request: Request):
+    if not _is_admin(current_user(request)):
+        raise HTTPException(403, "admin only")
+    rows = await _to_thread(mgr.admin_overview)
+    return {"sessions": rows,
+            "reap": {"auto_hours": IDLE_REAP_HOURS, "interval_min": IDLE_REAP_INTERVAL_MIN}}
+
+
+@app.post("/api/admin/sessions/{sid}/stop")
+async def admin_stop_session(sid: str, request: Request):
+    if not _is_admin(current_user(request)):
+        raise HTTPException(403, "admin only")
+    sess = mgr.find_any(sid)
+    if not sess:
+        raise HTTPException(404, "not found")
+    _teardown_live(sid)
+    await _to_thread(mgr.stop_container, sess)
+    return {"status": await _to_thread(mgr.status, sess)}
+
+
+@app.post("/api/admin/reap")
+async def admin_reap(request: Request):
+    if not _is_admin(current_user(request)):
+        raise HTTPException(403, "admin only")
+    body = await request.json()
+    hours = float(body.get("idle_hours") or 0)
+    if hours <= 0:
+        raise HTTPException(400, "idle_hours must be > 0")
+    dry = bool(body.get("dry_run"))
+    reaped = await _to_thread(mgr.reap_idle, int(hours * 3600), dry)
+    if not dry:
+        for r in reaped:
+            _teardown_live(r["sid"])   # kick any open ws so it reflects the now-stopped container
+    return {"reaped": reaped, "dry_run": dry}
 
 
 # ----- session CRUD (per user)
