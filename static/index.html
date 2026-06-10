@@ -616,12 +616,17 @@
         <div id="notifIosHint" class="hint" style="display:none;border-left:3px solid var(--accent,#c96442);padding-left:10px">
           On iPhone, notifications work only from the Home-Screen app: tap <b>Share → Add to Home
           Screen</b>, open ccchat from that icon, then turn this on.</div>
-        <label class="chk-label" title="Push when a task finishes or Claude asks a question">
-          <input type="checkbox" id="notifEnabled"><span>Push notifications</span>
+        <label class="chk-label" title="Push when a task finishes or Claude asks a question. Each device subscribes separately.">
+          <input type="checkbox" id="notifEnabled"><span>Push notifications on this device</span>
         </label>
+        <p class="hint" style="margin:4px 0 0">Subscriptions are per-device — enable this on each phone/computer you want to be notified on.</p>
         <div class="row" style="margin-top:10px">
           <button class="ghost" id="notifTest" type="button" disabled>Send test</button>
           <span class="status" id="notifStatus"></span>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <span class="status" id="notifDevices"></span>
+          <button class="ghost" id="notifDisableAll" type="button" style="display:none">Disable on all devices</button>
         </div>
       </div>
       <div class="set-pane" data-pane="appearance">
@@ -935,9 +940,19 @@ function _b64ToU8(b){ const pad='='.repeat((4-b.length%4)%4); const s=(b+pad).re
   const raw=atob(s); return Uint8Array.from([...raw].map(c=>c.charCodeAt(0))); }
 async function _curSub(){ const reg=await navigator.serviceWorker.getRegistration(); return reg ? reg.pushManager.getSubscription() : null; }
 
+// how many devices (across all your browsers/phones) are subscribed, + the global "off" affordance
+async function refreshDeviceCount(){
+  const dv=$('notifDevices'), btn=$('notifDisableAll'); if(!dv) return;
+  try{ const j=await (await fetch('/api/notifications/status')).json(); const n=j.count||0;
+    dv.textContent = n ? (n+' device'+(n>1?'s':'')+' receiving notifications') : 'no devices subscribed';
+    if(btn) btn.style.display = n ? '' : 'none';
+  }catch(e){ dv.textContent=''; if(btn) btn.style.display='none'; }
+}
+
 async function refreshNotifUI(){
   const cb=$('notifEnabled'), st=$('notifStatus'), hint=$('notifIosHint'), test=$('notifTest');
   if(!cb) return;
+  refreshDeviceCount();
   const iosNeedsInstall = _isiOS() && !_standalone();
   hint.style.display = iosNeedsInstall ? 'block' : 'none';
   if(!_notifSupported || iosNeedsInstall){
@@ -964,7 +979,7 @@ async function enableNotif(){
     const r=await fetch('/api/notifications/subscribe',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({subscription:sub.toJSON()})});
     if(!r.ok){ st.textContent='error registering'; $('notifEnabled').checked=false; return; }
-    _notifOn=true; _pushEndpoint=sub.endpoint; st.textContent='on'; $('notifTest').disabled=false; pingActive();
+    _notifOn=true; _pushEndpoint=sub.endpoint; st.textContent='on'; $('notifTest').disabled=false; pingActive(); refreshDeviceCount();
   }catch(e){ console.error('[notif] enable',e); st.textContent='error: '+(e.message||e); $('notifEnabled').checked=false; }
 }
 async function disableNotif(){
@@ -974,9 +989,16 @@ async function disableNotif(){
     if(sub){ try{ await fetch('/api/notifications/unsubscribe',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({endpoint:sub.endpoint})}); }catch(e){} await sub.unsubscribe(); }
   }catch(e){ console.error('[notif] disable',e); }
-  _notifOn=false; _pushEndpoint=null; st.textContent=''; $('notifTest').disabled=true;
+  _notifOn=false; _pushEndpoint=null; st.textContent=''; $('notifTest').disabled=true; refreshDeviceCount();
 }
 if($('notifEnabled')) $('notifEnabled').onchange=e=>{ e.target.checked ? enableNotif() : disableNotif(); };
+if($('notifDisableAll')) $('notifDisableAll').onclick=async()=>{
+  const dv=$('notifDevices'); if(dv) dv.textContent='disabling…';
+  try{ await fetch('/api/notifications/unsubscribe-all',{method:'POST'}); }catch(e){}
+  try{ const sub=await _curSub(); if(sub) await sub.unsubscribe(); }catch(e){}   // also drop this device's local sub
+  _notifOn=false; _pushEndpoint=null;
+  await refreshNotifUI();
+};
 if($('notifTest')) $('notifTest').onclick=async()=>{
   const st=$('notifStatus'); st.textContent='sending…';
   // (1) LOCAL notification — shown directly by the SW registration, no push round-trip. Isolates

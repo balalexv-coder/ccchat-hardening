@@ -465,6 +465,20 @@ async def notif_subscribe(request: Request):
     return {"ok": True}
 
 
+@app.get("/api/notifications/status")
+def notif_status(request: Request):
+    """How many devices are subscribed for this account (shown next to the per-device toggle)."""
+    email = current_user(request)
+    return {"count": len(push_store.get(_email_slug(email)))}
+
+
+@app.post("/api/notifications/unsubscribe-all")
+def notif_unsubscribe_all(request: Request):
+    """Global off: drop every device's subscription for this account."""
+    email = current_user(request)
+    return {"ok": True, "removed": push_store.clear(_email_slug(email))}
+
+
 @app.post("/api/notifications/unsubscribe")
 async def notif_unsubscribe(request: Request):
     email = current_user(request)

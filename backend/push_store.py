@@ -48,6 +48,16 @@ def add(slug: str, sub: dict) -> None:
     _save(d)
 
 
+def clear(slug: str) -> int:
+    """Drop ALL subscriptions for this user (a global "disable on every device"). Returns how many."""
+    d = _load()
+    n = len(d.get(slug, []))
+    if slug in d:
+        d.pop(slug, None)
+        _save(d)
+    return n
+
+
 def remove(slug: str, endpoint: str) -> None:
     """Drop a subscription by endpoint (on unsubscribe, or when the push service reports it gone)."""
     if not slug or not endpoint:
