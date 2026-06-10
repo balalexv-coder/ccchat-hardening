@@ -3,7 +3,7 @@
 // changes constantly; a cached "/" would show a stale/broken UI. Navigations always go to the
 // network. We only cache static icons/manifest, and only fall back to cache if the network is
 // genuinely unreachable.
-const CACHE = 'ccchat-static-v4';
+const CACHE = 'ccchat-static-v5';
 const STATIC = ['/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -27,6 +27,8 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws')) return;  // always live
+  // proxied sub-apps (in-browser VS Code, terminal) own their own caching/SW — never intercept them
+  if (url.pathname.startsWith('/code/') || url.pathname.startsWith('/term/')) return;
   // navigations (the HTML page) — network only, never cache, so the UI is never stale
   if (req.mode === 'navigate' || url.pathname === '/' || url.pathname.endsWith('.html')) {
     e.respondWith(fetch(req));
