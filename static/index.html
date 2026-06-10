@@ -896,6 +896,8 @@ $('setBtn').onclick=()=>openSettings('account');
 // ---------- push notifications ("Claude finished / needs you", even with the app closed)
 const _notifSupported = ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window);
 let _notifOn = false;   // drives the in-tab chime when you're actively viewing a session
+let _pushEndpoint = null;   // this device's push endpoint — sent in the foreground heartbeat so the
+                            // server suppresses only THIS device's buzz, not the phone's
 function _isiOS(){ return /iP(hone|ad|od)/.test(navigator.platform)
   || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints>1)   // iPadOS reports as Mac
   || /iPhone|iPad|iPod/.test(navigator.userAgent); }
@@ -915,7 +917,7 @@ async function refreshNotifUI(){
     return;
   }
   cb.disabled=false;
-  const sub=await _curSub(); _notifOn=!!sub;
+  const sub=await _curSub(); _notifOn=!!sub; _pushEndpoint = sub ? sub.endpoint : null;
   cb.checked=_notifOn; test.disabled=!_notifOn;
   st.textContent = _notifOn ? 'on' : (Notification.permission==='denied' ? 'blocked in browser settings' : '');
 }
@@ -933,7 +935,7 @@ async function enableNotif(){
     const r=await fetch('/api/notifications/subscribe',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({subscription:sub.toJSON()})});
     if(!r.ok){ st.textContent='error registering'; $('notifEnabled').checked=false; return; }
-    _notifOn=true; st.textContent='on'; $('notifTest').disabled=false;
+    _notifOn=true; _pushEndpoint=sub.endpoint; st.textContent='on'; $('notifTest').disabled=false; pingActive();
   }catch(e){ console.error('[notif] enable',e); st.textContent='error: '+(e.message||e); $('notifEnabled').checked=false; }
 }
 async function disableNotif(){
@@ -943,7 +945,7 @@ async function disableNotif(){
     if(sub){ try{ await fetch('/api/notifications/unsubscribe',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({endpoint:sub.endpoint})}); }catch(e){} await sub.unsubscribe(); }
   }catch(e){ console.error('[notif] disable',e); }
-  _notifOn=false; st.textContent=''; $('notifTest').disabled=true;
+  _notifOn=false; _pushEndpoint=null; st.textContent=''; $('notifTest').disabled=true;
 }
 if($('notifEnabled')) $('notifEnabled').onchange=e=>{ e.target.checked ? enableNotif() : disableNotif(); };
 if($('notifTest')) $('notifTest').onclick=async()=>{
@@ -972,7 +974,7 @@ function chime(){
 // foreground heartbeat: tell the server "I'm watching this session" so it suppresses the OS push
 // (we get the in-tab chime instead). Stops when the tab is hidden → after a short TTL the server
 // resumes sending OS pushes, so a backgrounded/closed app still gets notified.
-function pingActive(){ if(ws && ws.readyState===1 && document.visibilityState==='visible'){ try{ ws.send(JSON.stringify({type:'active'})); }catch(e){} } }
+function pingActive(){ if(ws && ws.readyState===1 && document.visibilityState==='visible'){ try{ ws.send(JSON.stringify({type:'active', endpoint:_pushEndpoint||''})); }catch(e){} } }
 setInterval(pingActive, 20000);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') pingActive(); });
 

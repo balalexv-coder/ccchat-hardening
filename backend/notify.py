@@ -83,9 +83,10 @@ def _send_one(sub: dict, data: str) -> None:
             vapid_private_key=str(_PRIV), vapid_claims={"sub": _SUB})
 
 
-def send_to_user(slug: str, payload: dict) -> int:
-    """Push `payload` (dict → JSON) to every device registered for this user. Prunes subscriptions
-    the push service reports as gone (404/410). Returns how many were delivered without error."""
+def send_to_user(slug: str, payload: dict, skip_endpoints=()) -> int:
+    """Push `payload` (dict → JSON) to every device registered for this user, except any whose
+    endpoint is in `skip_endpoints` (those devices are foreground-watching and chime in-tab instead).
+    Prunes subscriptions the push service reports as gone (404/410). Returns how many were sent."""
     _ensure()
     if webpush is None:
         _LOG.warning("[notify] pywebpush not installed — push disabled")
@@ -93,10 +94,13 @@ def send_to_user(slug: str, payload: dict) -> int:
     subs = push_store.get(slug)
     if not subs:
         return 0
+    skip = set(skip_endpoints or ())
     data = json.dumps(payload)
     sent = 0
     dead = []
     for sub in subs:
+        if sub.get("endpoint") in skip:
+            continue
         try:
             _send_one(sub, data)
             sent += 1

@@ -51,12 +51,32 @@ async def _idle_reaper_loop():
 
 # ---- "task done / needs you" push notifications --------------------------------------------------
 # The pump (session.py) fires on_notify(sess, ev) on done/blocked/choice — server-side, so it works
-# even when the browser/phone is closed. We suppress the push if the user is actively viewing that
-# session in the foreground (the page plays an in-tab sound instead, so the device you're staring at
-# doesn't also buzz). Foreground is tracked via a lightweight "active" heartbeat over the chat ws.
-ACTIVE_VIEW: dict = {}        # sid -> last foreground-activity timestamp (from the browser)
-ACTIVE_TTL = 35              # seconds a session counts as "being watched" after the last heartbeat
+# even when the browser/phone is closed. Suppression is PER-DEVICE, not per-session: a device only
+# stops buzzing while THAT device is the one actively looking at the session (it plays an in-tab
+# chime instead). Every other registered device (e.g. your phone) still gets the push — so an open
+# tab on your laptop never silences your phone. Foreground is tracked via an "active" heartbeat over
+# the chat ws that carries the browser's own push-subscription endpoint.
+ACTIVE_VIEW: dict = {}        # sid -> {push endpoint: last foreground-activity timestamp}
+ACTIVE_TTL = 35              # seconds a device counts as "watching" after its last heartbeat
 _NOTIFY_TASKS: set = set()    # strong refs so fire-and-forget push tasks aren't GC'd
+
+
+def _mark_active(sid: str, endpoint: str):
+    """Record that the device owning `endpoint` is foreground-watching `sid` right now. Only real
+    subscription endpoints are tracked — a foreground tab with notifications off suppresses nothing."""
+    if not sid or not endpoint:
+        return
+    now = time.time()
+    seen = ACTIVE_VIEW.setdefault(sid, {})
+    seen[endpoint] = now
+    for ep, ts in list(seen.items()):                # prune stale entries so the map can't grow
+        if now - ts > ACTIVE_TTL:
+            del seen[ep]
+
+
+def _watching_endpoints(sid: str) -> set:
+    now = time.time()
+    return {ep for ep, ts in ACTIVE_VIEW.get(sid, {}).items() if now - ts < ACTIVE_TTL}
 
 
 def _session_notify(sess: dict, ev: dict):
@@ -75,8 +95,6 @@ async def _do_notify(sess: dict, ev: dict):
     slug = sess.get("user")
     if not sid or not slug:
         return
-    if time.time() - ACTIVE_VIEW.get(sid, 0) < ACTIVE_TTL:
-        return                                       # user is watching this session right now
     if not push_store.get(slug):
         return                                       # no registered devices — skip the work
     name = sess.get("name") or sid[:8]
@@ -90,8 +108,9 @@ async def _do_notify(sess: dict, ev: dict):
     else:
         return
     payload = {"title": title, "body": body, "sid": sid, "tag": f"{sid}:{kind}"}
+    skip = _watching_endpoints(sid)                  # devices currently looking → chime, don't buzz
     try:
-        await _to_thread(notify.send_to_user, slug, payload)
+        await _to_thread(notify.send_to_user, slug, payload, skip)
     except Exception:
         pass
 
@@ -702,9 +721,10 @@ async def ws(websocket: WebSocket, sid: str):
                             await websocket.send_json({"kind": "busy"})
                             await s.send_text(text)
                 elif msg.get("type") == "active":
-                    # foreground heartbeat: this client is watching this session right now, so
-                    # suppress push notifications for it (the page handles them in-tab instead)
-                    ACTIVE_VIEW[sid] = time.time()
+                    # foreground heartbeat: THIS device is watching this session right now. Carries
+                    # its own push endpoint so we suppress only this device's buzz (in-tab chime
+                    # instead) — other devices (e.g. the phone) still get the push.
+                    _mark_active(sid, msg.get("endpoint") or "")
                 elif msg.get("type") == "stop":
                     await s.interrupt()
                     await websocket.send_json({"kind": "done"})
