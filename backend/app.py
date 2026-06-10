@@ -925,9 +925,12 @@ async def code_http(sid: str, path: str, request: Request):
     q = dict(request.query_params); q["tkn"] = code_token(sid)
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _CODE_HOP}
     body = await request.body()
-    async with httpx.AsyncClient(timeout=60) as cli:
-        up = await cli.request(request.method, f"http://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}",
-                               params=q, content=body, headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=60) as cli:
+            up = await cli.request(request.method, f"http://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}",
+                                   params=q, content=body, headers=headers)
+    except httpx.HTTPError:
+        raise HTTPException(502, "editor not reachable")
     out = {k: v for k, v in up.headers.items() if k.lower() not in _CODE_HOP}
     return Response(up.content, status_code=up.status_code, headers=out,
                     media_type=up.headers.get("content-type"))

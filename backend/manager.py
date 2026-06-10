@@ -428,19 +428,23 @@ class Manager:
         (injected by the proxy) blocks other containers on the shared net from connecting. Blocks
         until the server answers so the first proxied request doesn't 502."""
         c = sess["container"]; sid = sess["id"]
-        up = "up" in (_docker("exec", c, "sh", "-c",
-                      "pgrep -f openvscode-server >/dev/null 2>&1 && echo up || echo down").stdout or "")
-        if not up:
-            tok = code_token(sid)
-            _docker("exec", "-d", c, "sh", "-lc",
-                    f"/opt/openvscode-server/bin/openvscode-server --host 0.0.0.0 "
-                    f"--port {self.CODE_PORT} --server-base-path /code/{sid} "
-                    f"--connection-token {tok} >/tmp/code.log 2>&1")
-        for _ in range(40):                          # wait until it's listening (cold boot ~3-8s)
+        # "is it up?" = does the port answer (any HTTP code, incl. 401 for the tokenless probe).
+        # Checking the port avoids the pgrep -f self-match trap (the check process matches its own
+        # command line). The base path is fixed per container (sid never changes), so no staleness.
+        def listening():
             r = _docker("exec", c, "sh", "-c",
                         f"curl -s -o /dev/null -w '%{{http_code}}' "
                         f"http://127.0.0.1:{self.CODE_PORT}/code/{sid}/ 2>/dev/null || true")
-            if (r.stdout or "").strip() not in ("", "000"):
+            return (r.stdout or "").strip() not in ("", "000")
+        if listening():
+            return
+        tok = code_token(sid)
+        _docker("exec", "-d", c, "sh", "-lc",
+                f"/opt/openvscode-server/bin/openvscode-server --host 0.0.0.0 "
+                f"--port {self.CODE_PORT} --server-base-path /code/{sid} "
+                f"--connection-token {tok} >/tmp/code.log 2>&1")
+        for _ in range(40):                          # wait until it's listening (cold boot ~3-8s)
+            if listening():
                 return
             time.sleep(0.4)
 
