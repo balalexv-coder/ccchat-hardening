@@ -19,7 +19,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import appconfig, mounts_store, notify, push_store, settings_store, userauth
+from . import appconfig, ideas_store, mounts_store, notify, push_store, settings_store, userauth
 from .manager import Manager, _email_slug, ttyd_credential, code_token
 from .session import Session
 
@@ -810,6 +810,31 @@ def session_context(sid: str, request: Request):
     if not sess:
         raise HTTPException(404, "not found")
     return mgr.context_view(sess)
+
+
+@app.get("/api/sessions/{sid}/ideas")
+def get_ideas(sid: str, request: Request):
+    """Parked "ideas" for this session — server-stored so they sync across the user's devices."""
+    sess = mgr._find(current_user(request), sid)
+    if not sess:
+        raise HTTPException(404, "not found")
+    return {"ideas": ideas_store.get(sid)}
+
+
+@app.put("/api/sessions/{sid}/ideas")
+async def put_ideas(sid: str, request: Request):
+    """Replace the whole idea list for this session (client owns the list, PUTs it on each change)."""
+    sess = mgr._find(current_user(request), sid)
+    if not sess:
+        raise HTTPException(404, "not found")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "bad json")
+    ideas = body.get("ideas") if isinstance(body, dict) else None
+    if not isinstance(ideas, list):
+        raise HTTPException(400, "ideas must be a list")
+    return {"ok": True, "ideas": ideas_store.replace(sid, ideas)}
 
 
 @app.post("/api/clog")

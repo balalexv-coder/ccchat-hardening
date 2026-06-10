@@ -246,6 +246,22 @@
   #queue .qitem .qtx{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #queue .qitem .qrm{cursor:pointer;color:var(--muted)}
   #queue .qitem .qrm:hover{color:var(--danger)}
+  #queue .qitem .qic{flex:0 0 auto;font-size:13px;line-height:1}
+  #queue .qitem.idea{border-color:var(--warn)}              /* идея — лампочка, держится вручную */
+  #queue .qitem .qsend{cursor:pointer;color:var(--accent);font-size:13px;padding:0 2px}
+  #queue .qitem .qsend:hover{filter:brightness(1.3)}
+  /* "поправка / идея / отменить" — всплывает над композером, когда пишешь, пока claude занят */
+  #qTypePop{display:none;position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.35);align-items:flex-end;justify-content:center}
+  #qTypePop.open{display:flex}
+  #qTypePop .qpop-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;width:92%;max-width:440px;margin-bottom:80px;box-shadow:0 8px 30px rgba(0,0,0,.45)}
+  #qTypePop .qpop-tit{font-size:12px;color:var(--muted);margin-bottom:6px}
+  #qTypePop .qpop-tx{font-size:13px;color:var(--txt);background:var(--chip);border:1px solid var(--chip-line);border-radius:8px;padding:8px;max-height:84px;overflow:auto;margin-bottom:12px;white-space:pre-wrap;word-break:break-word}
+  #qTypePop .qpop-btns{display:flex;gap:8px}
+  #qTypePop .qpop-b{flex:1;padding:11px 8px;border-radius:10px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;border:1px solid var(--line);background:var(--chip);color:var(--txt);display:flex;align-items:center;justify-content:center;gap:6px}
+  #qTypePop .qpop-b.fix{border-color:var(--accent)}
+  #qTypePop .qpop-b.idea{border-color:var(--warn)}
+  #qTypePop .qpop-b.cancel{flex:0 0 auto;color:var(--muted)}
+  #qTypePop .qpop-b:hover{filter:brightness(1.15)}
   #attachBtn{background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;font-size:18px;padding:0 10px;cursor:pointer}
   #micBtn{display:none;background:none;border:1px solid var(--line);color:var(--muted);border-radius:8px;font-size:18px;padding:0 10px;cursor:pointer}
   #micBtn:hover{color:var(--accent);border-color:var(--accent)}
@@ -546,6 +562,16 @@
     </div>
   </div></div>
 
+  <div id="qTypePop"><div class="qpop-box">
+    <div class="qpop-tit">Claude сейчас занят — как добавить это сообщение?</div>
+    <div class="qpop-tx" id="qpopText"></div>
+    <div class="qpop-btns">
+      <button class="qpop-b fix" id="qpopFix">✏️ Поправка</button>
+      <button class="qpop-b idea" id="qpopIdea">💡 Идея</button>
+      <button class="qpop-b cancel" id="qpopCancel">Отменить</button>
+    </div>
+  </div></div>
+
   <div id="modal"><div class="box">
     <h3 id="modalTitle">New session</h3>
     <label>Name</label>
@@ -776,6 +802,7 @@ function openSession(s){
   log.querySelectorAll('.msg').forEach(e=>e.remove()); pendingChoice=null; renderedChoices.clear();
   if(todoEl){todoEl.remove();todoEl=null;}   // drop the previous session's checklist
   busyStop(); _busy=false;   // reset indicator; connect() re-shows it if this session is busy
+  _sendQ=[]; renderQueue(); loadIdeas(s.id);   // drop prev session's queue; pull THIS session's parked ideas from the server
   showBlocker(null);         // clear any stale blocking banner; connect() re-emits if still blocked
   $('ctxSize').textContent='';   // reset context size; refilled from this session's turns
   setTermMode(false);   // always start in pretty mode for a freshly opened session
@@ -1042,7 +1069,7 @@ function pingActive(){ if(ws && ws.readyState===1 && document.visibilityState===
 function pingInactive(){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify({type:'inactive', endpoint:_pushEndpoint||''})); }catch(e){} } }
 setInterval(pingActive, 20000);
 document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible'){ checkAlive(); pingActive(); }   // refocus → catch a dead socket fast
+  if(document.visibilityState==='visible'){ checkAlive(); pingActive(); if(cur) loadIdeas(cur.id); }   // refocus → catch a dead socket fast + re-pull ideas synced from another device
   else pingInactive();
 });
 window.addEventListener('focus', checkAlive);        // desktop tab refocus
@@ -1616,13 +1643,44 @@ function submit(){
     const lines=ready.map(a=>'[attachment: '+a.path+']').join('\n');
     text = lines + (t? '\n'+t : '');
   }
-  _sendQ.push(text);
+  if(_busy){
+    // claude is mid-turn — don't just queue blindly; ask whether this is a quick "поправка"
+    // (auto-sends at the next opening, current behaviour) or an "идея" to revisit later (parked).
+    openQueueTypePop(text);
+    return;   // keep the input/attachments intact until a type is chosen (Отменить leaves them)
+  }
+  // free → send right away as before
+  _sendQ.push({text,type:'fix'});
   inp.value='';inp.style.height='auto';hideCmds();
   attached=[]; renderAttachments();
   renderQueue();
-  flushQueue();   // sends now if free, otherwise the message waits in the queue
+  flushQueue();   // sends now (we're free)
 }
 send.onclick=submit;
+
+// ----- "поправка / идея" type picker (shown when you write while claude is busy) -----
+let _pendQ=null;   // the composed payload awaiting a type choice
+function openQueueTypePop(text){
+  _pendQ=text;
+  $('qpopText').textContent=text.replace(/\[attachment:[^\]]*\]/g,'📎').trim()||'📎';
+  $('qTypePop').classList.add('open');
+}
+function closeQueueTypePop(){ $('qTypePop').classList.remove('open'); }
+function pickQueueType(type){
+  if(_pendQ==null) return;
+  _sendQ.push({text:_pendQ, type});
+  _pendQ=null; closeQueueTypePop();
+  inp.value='';inp.style.height='auto';hideCmds();
+  attached=[]; renderAttachments();
+  if(type==='idea') saveIdeas();
+  renderQueue();
+  if(type==='fix') flushQueue();   // идея НЕ улетает сама — только вручную
+}
+$('qpopFix').onclick=()=>pickQueueType('fix');
+$('qpopIdea').onclick=()=>pickQueueType('idea');
+$('qpopCancel').onclick=()=>{ _pendQ=null; closeQueueTypePop(); };   // keep what you typed
+$('qTypePop').addEventListener('click',e=>{ if(e.target===$('qTypePop')){ _pendQ=null; closeQueueTypePop(); } });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&$('qTypePop').classList.contains('open')){ _pendQ=null; closeQueueTypePop(); } });
 
 // nice in-app confirm dialog -> resolves true/false
 function confirmDialog({title='Confirm', message='', ok='Confirm'}={}){
@@ -1642,7 +1700,7 @@ function confirmDialog({title='Confirm', message='', ok='Confirm'}={}){
 // send a fixed command through the same queue as a typed message
 function sendCommand(text){
   if(!ws||ws.readyState!==1)return;
-  _sendQ.push(text); renderQueue(); flushQueue();
+  _sendQ.push({text,type:'fix'}); renderQueue(); flushQueue();
 }
 // context-size indicator doubles as a /compact button (with confirmation)
 $('ctxSize').onclick=async()=>{
@@ -2031,29 +2089,74 @@ if(micBtn){
 // ---------- send queue: while claude is busy, hold messages locally and flush them one-by-one
 // when it's free. Queued items are NOT shown as chat bubbles (they're not in the JSONL yet) —
 // they appear in the chat from the transcript once claude actually processes them.
+// Each item is {text, type}: 'fix' (поправка) auto-sends at the next opening; 'idea' (идея) is
+// parked — sent only when you click ➤ — and persists SERVER-SIDE per session so it syncs across
+// your devices (jot on a laptop, act on a phone).
 let _busy=false, _sendQ=[];
 const queueEl=document.getElementById('queue');
+function _qPreview(t){ return t.replace(/\[attachment:[^\]]*\]/g,'📎').trim()||'📎'; }
 function renderQueue(){
   if(!queueEl) return;
   queueEl.innerHTML='';
   if(!_sendQ.length){ queueEl.classList.remove('show'); return; }
   queueEl.classList.add('show');
+  const nf=_sendQ.filter(q=>q.type==='fix').length, ni=_sendQ.filter(q=>q.type==='idea').length;
   const head=document.createElement('div'); head.className='qhead';
-  head.textContent='Queued: '+_sendQ.length+' (will send when free)';
+  const parts=[];
+  if(nf) parts.push('✏️ '+nf+' — отправлю при первой свободной');
+  if(ni) parts.push('💡 '+ni+' — вручную');
+  head.textContent=parts.join('  ·  ');
   queueEl.appendChild(head);
   _sendQ.forEach((m,i)=>{
-    const it=document.createElement('div'); it.className='qitem';
-    const tx=document.createElement('span'); tx.className='qtx'; tx.textContent=m.replace(/\[attachment:[^\]]*\]/g,'📎').trim()||'📎';
+    const it=document.createElement('div'); it.className='qitem '+m.type;
+    const ic=document.createElement('span'); ic.className='qic'; ic.textContent=m.type==='idea'?'💡':'✏️';
+    const tx=document.createElement('span'); tx.className='qtx'; tx.textContent=_qPreview(m.text);
+    it.append(ic,tx);
+    if(m.type==='idea'){
+      const snd=document.createElement('span'); snd.className='qsend'; snd.textContent='➤'; snd.title='Отправить идею';
+      snd.onclick=()=>sendIdea(i);
+      it.append(snd);
+    }
     const rm=document.createElement('span'); rm.className='qrm'; rm.textContent='✕';
-    rm.onclick=()=>{ _sendQ.splice(i,1); renderQueue(); };
-    it.append(tx,rm); queueEl.appendChild(it);
+    rm.onclick=()=>{ const wasIdea=_sendQ[i].type==='idea'; _sendQ.splice(i,1); if(wasIdea) saveIdeas(); renderQueue(); };
+    it.append(rm); queueEl.appendChild(it);
   });
 }
 function _rawSend(text){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',text})); }
 function flushQueue(){
-  if(_busy||!_sendQ.length) return;
-  const text=_sendQ.shift(); renderQueue();
-  _busy=true; _rawSend(text);
+  if(_busy) return;
+  const i=_sendQ.findIndex(q=>q.type==='fix');   // ideas are never auto-flushed
+  if(i<0) return;
+  const item=_sendQ.splice(i,1)[0]; renderQueue();
+  _busy=true; _rawSend(item.text);
+}
+// manually fire a parked idea: it becomes a normal send (now if free, else at the next opening)
+function sendIdea(i){
+  const it=_sendQ[i]; if(!it) return;
+  _sendQ.splice(i,1); _sendQ.push({text:it.text,type:'fix'});
+  saveIdeas(); renderQueue(); flushQueue();
+}
+
+// ----- idea persistence: server-side, per session, so ideas travel between your devices -----
+let _ideaSaveT=null;
+function saveIdeas(){
+  if(!cur) return;
+  const sid=cur.id, ideas=_sendQ.filter(q=>q.type==='idea').map(q=>q.text);
+  clearTimeout(_ideaSaveT);
+  _ideaSaveT=setTimeout(()=>{
+    fetch('/api/sessions/'+sid+'/ideas',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ideas})}).catch(()=>{});
+  }, 250);   // debounce bursts of add/remove
+}
+async function loadIdeas(sid){
+  try{
+    const j=await (await fetch('/api/sessions/'+sid+'/ideas')).json();
+    if(!cur||cur.id!==sid) return;   // switched away while loading
+    const ideas=(j.ideas||[]).map(t=>({text:t,type:'idea'}));
+    const fixes=_sendQ.filter(q=>q.type==='fix');   // keep any pending corrections
+    _sendQ=[...fixes, ...ideas];
+    renderQueue();
+  }catch(e){}
 }
 
 </script>
