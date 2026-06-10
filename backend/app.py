@@ -922,7 +922,8 @@ async def _code_up(email: str, sid: str):
     loop = asyncio.get_event_loop()
     if await loop.run_in_executor(None, mgr.status, sess) != "running":
         return None, False
-    await loop.run_in_executor(None, mgr.ensure_running, sess)
+    # the editor only needs the container up + openvscode; it does NOT need claude/ttyd, so skip
+    # ensure_running (avoids relaunching them as a side effect and makes the stale-image path fast)
     ready = await loop.run_in_executor(None, mgr.ensure_code, sess)
     return (mgr.web_ip(sess) or None), ready
 
