@@ -1001,19 +1001,10 @@ if($('notifDisableAll')) $('notifDisableAll').onclick=async()=>{
 };
 if($('notifTest')) $('notifTest').onclick=async()=>{
   const st=$('notifStatus'); st.textContent='sending…';
-  // (1) LOCAL notification — shown directly by the SW registration, no push round-trip. Isolates
-  // "does this device display notifications at all" (permission/OS) from the push pipeline / SW
-  // push handler. registration.showNotification works on any SW version, even a stale one.
-  let localOk=false;
-  try{ const reg=await navigator.serviceWorker.ready;
-    await reg.showNotification('ccchat (local)', {body:'Local test — display works on this device', icon:'/icon-192.png', tag:'local-test', data:{sid:''}});
-    localOk=true;
-  }catch(e){ console.error('[notif] local',e); }
-  // (2) SERVER push — full pipeline incl. the SW 'push' handler (which a stale SW won't have)
   try{ const r=await fetch('/api/notifications/test',{method:'POST'}); const j=await r.json().catch(()=>({}));
-    const push = r.ok ? ('push→'+(j.sent||0)+' dev') : ('push err: '+(j.detail||r.status));
-    st.textContent = (localOk?'local✓ ':'local✗ ')+push;
-  }catch(e){ st.textContent=(localOk?'local✓ ':'local✗ ')+'push error'; }
+    const n=j.sent||0;
+    st.textContent = r.ok ? ('sent to '+n+' device'+(n===1?'':'s')) : ('error: '+(j.detail||r.status)); }
+  catch(e){ st.textContent='error'; }
 };
 
 // in-tab chime when a turn finishes / needs you AND you're actively watching (the server suppresses
