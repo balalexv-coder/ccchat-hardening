@@ -952,7 +952,7 @@ async def code_ws(ws: WebSocket, sid: str, path: str):
     url = f"ws://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}" + (f"?{qs}" if qs else "")
     try:
         async with websockets.connect(url, max_size=None, open_timeout=12,
-                                      additional_headers={"Cookie": f"vscode-tkn={code_token(sid)}"}) as up:
+                                      extra_headers={"Cookie": f"vscode-tkn={code_token(sid)}"}) as up:
             async def c2u():
                 try:
                     while True:
