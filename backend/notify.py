@@ -30,8 +30,10 @@ except Exception:                                   # dependency missing → deg
 _LOG = logging.getLogger("uvicorn.error")
 VAPID_DIR = Path(os.environ.get("CCCHAT_VAPID_DIR", "/state/vapid"))
 _PRIV = VAPID_DIR / "private.pem"
-# contact address embedded in the VAPID JWT (push services may use it to reach the operator)
-_SUB = os.environ.get("CCCHAT_VAPID_SUB", "mailto:admin@ccchat.local")
+# contact address embedded in the VAPID JWT (push services may use it to reach the operator).
+# MUST be a routable mailto:/https: — Apple's push service rejects non-real domains (e.g. a
+# `.local` TLD) with 403 BadJwtToken, which silently kills delivery to iOS.
+_SUB = os.environ.get("CCCHAT_VAPID_SUB", "mailto:admin@balalexv.tech")
 
 _lock = threading.Lock()
 _cache: dict = {}
