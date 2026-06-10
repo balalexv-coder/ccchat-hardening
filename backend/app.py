@@ -893,7 +893,10 @@ async def term_asset(sid: str, path: str, request: Request):
 # prefix — we forward the path verbatim (no rewriting). The per-session connection token is injected
 # on every upstream request, so the browser never holds it and a co-tenant container that hits the
 # editor port directly (no token) is rejected. Auth is the app session, like the chat/terminal.
-_CODE_HOP = {"host", "cookie", "connection", "content-length", "content-encoding",
+# OpenVSCode authenticates by a `vscode-tkn` cookie (the ?tkn= query is just a one-time handshake
+# that sets it and 302-redirects). We inject the cookie on every UPSTREAM request and never forward
+# the token to the browser (strip Set-Cookie) — so the secret lives only server-side.
+_CODE_HOP = {"host", "cookie", "set-cookie", "connection", "content-length", "content-encoding",
              "transfer-encoding", "keep-alive"}
 
 
@@ -922,13 +925,13 @@ async def code_http(sid: str, path: str, request: Request):
     ip = await _code_ip(_require_approved(request), sid)
     if not ip:
         raise HTTPException(404, "not found")
-    q = dict(request.query_params); q["tkn"] = code_token(sid)
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _CODE_HOP}
+    headers["cookie"] = f"vscode-tkn={code_token(sid)}"
     body = await request.body()
     try:
         async with httpx.AsyncClient(timeout=60) as cli:
             up = await cli.request(request.method, f"http://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}",
-                                   params=q, content=body, headers=headers)
+                                   params=dict(request.query_params), content=body, headers=headers)
     except httpx.HTTPError:
         raise HTTPException(502, "editor not reachable")
     out = {k: v for k, v in up.headers.items() if k.lower() not in _CODE_HOP}
@@ -945,11 +948,11 @@ async def code_ws(ws: WebSocket, sid: str, path: str):
     if not ip:
         await ws.close(); return
     await ws.accept()
-    q = dict(ws.query_params); q["tkn"] = code_token(sid)
-    qs = urllib.parse.urlencode(q)
+    qs = urllib.parse.urlencode(dict(ws.query_params))
+    url = f"ws://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}" + (f"?{qs}" if qs else "")
     try:
-        async with websockets.connect(f"ws://{ip}:{mgr.CODE_PORT}/code/{sid}/{path}?{qs}",
-                                      max_size=None, open_timeout=12) as up:
+        async with websockets.connect(url, max_size=None, open_timeout=12,
+                                      additional_headers={"Cookie": f"vscode-tkn={code_token(sid)}"}) as up:
             async def c2u():
                 try:
                     while True:
