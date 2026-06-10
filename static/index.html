@@ -975,8 +975,10 @@ function chime(){
 // (we get the in-tab chime instead). Stops when the tab is hidden → after a short TTL the server
 // resumes sending OS pushes, so a backgrounded/closed app still gets notified.
 function pingActive(){ if(ws && ws.readyState===1 && document.visibilityState==='visible'){ try{ ws.send(JSON.stringify({type:'active', endpoint:_pushEndpoint||''})); }catch(e){} } }
+function pingInactive(){ if(ws && ws.readyState===1){ try{ ws.send(JSON.stringify({type:'inactive', endpoint:_pushEndpoint||''})); }catch(e){} } }
 setInterval(pingActive, 20000);
-document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') pingActive(); });
+document.addEventListener('visibilitychange',()=>{ document.visibilityState==='visible' ? pingActive() : pingInactive(); });
+window.addEventListener('pagehide', pingInactive);   // app locked/closed → resume pushes immediately
 
 // deep-link from a notification tap → open that session
 function openSid(sid){ if(!sid) return; const s=sessions.find(x=>x.id===sid); if(s) openSession(s); }

@@ -725,6 +725,10 @@ async def ws(websocket: WebSocket, sid: str):
                     # its own push endpoint so we suppress only this device's buzz (in-tab chime
                     # instead) — other devices (e.g. the phone) still get the push.
                     _mark_active(sid, msg.get("endpoint") or "")
+                elif msg.get("type") == "inactive":
+                    # the app backgrounded / locked → stop suppressing this device immediately, so a
+                    # task that finishes right after you lock the phone still pushes (no 35s lag)
+                    ACTIVE_VIEW.get(sid, {}).pop(msg.get("endpoint") or "", None)
                 elif msg.get("type") == "stop":
                     await s.interrupt()
                     await websocket.send_json({"kind": "done"})
