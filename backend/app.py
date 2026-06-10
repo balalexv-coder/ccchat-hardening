@@ -426,7 +426,10 @@ def notif_vapid_key(request: Request):
 @app.post("/api/notifications/subscribe")
 async def notif_subscribe(request: Request):
     email = current_user(request)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     sub = body.get("subscription") or body
     if not isinstance(sub, dict) or not sub.get("endpoint"):
         raise HTTPException(400, "invalid subscription")
@@ -437,7 +440,10 @@ async def notif_subscribe(request: Request):
 @app.post("/api/notifications/unsubscribe")
 async def notif_unsubscribe(request: Request):
     email = current_user(request)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     ep = (body.get("endpoint") or "").strip()
     if ep:
         push_store.remove(_email_slug(email), ep)
