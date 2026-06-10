@@ -429,6 +429,11 @@
     #sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%);transition:transform .2s}
     #sidebar.open{transform:translateX(0)}
     #burger{display:block}
+    /* the split (beside-the-chat) layout makes no sense on a phone: when the terminal is open it is
+       ALWAYS full-screen, regardless of the desktop-only "Open full-screen" preference */
+    body.split-term #chatCol{display:none}
+    body.split-term #termGutter{display:none}
+    body.split-term #termframe{width:100%;max-width:100%;min-width:0}
   }
 </style>
 </head>
@@ -598,7 +603,7 @@
         <hr style="border:0;border-top:1px solid var(--line);margin:22px 0">
         <h3>Terminal</h3>
         <p class="hint">How the terminal opens from ⋯ → Terminal.</p>
-        <label class="chk-label" title="When off, the terminal opens beside the chat with a draggable divider">
+        <label class="chk-label" title="Desktop only — when off, the terminal opens beside the chat with a draggable divider. On a phone it's always full-screen.">
           <input type="checkbox" id="termReplace">
           <span>Open full-screen</span>
         </label>
