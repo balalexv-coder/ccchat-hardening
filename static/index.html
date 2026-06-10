@@ -134,9 +134,10 @@
   /* collected into the ⋯ menu — keep in DOM (handlers/state) but hidden in the header */
   #power,#vscodeBtn,#ctxtog,#setBtn,#powerMsg{display:none!important}
   /* keep the drawer + its opener usable above the per-chat op overlay (z-25): on mobile the
-     burger is the ONLY way to reach other sessions while this chat restarts/recreates */
+     burger is the ONLY way to reach other sessions while this chat restarts/recreates. Stay BELOW
+     the settings page (z-30) and modals (z-40) so those still cover the sidebar when open. */
   #burger{position:relative;z-index:26}
-  #sidebar{z-index:35}
+  #sidebar{z-index:28}
   #menuWrap{position:relative;flex:none}
   #menuBtn{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:16px;line-height:1;padding:3px 9px;cursor:pointer}
   #menuBtn:hover{color:var(--txt);background:var(--hover)}
