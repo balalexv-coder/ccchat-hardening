@@ -734,6 +734,10 @@ async def ws(websocket: WebSocket, sid: str):
                     # the app backgrounded / locked → stop suppressing this device immediately, so a
                     # task that finishes right after you lock the phone still pushes (no 35s lag)
                     ACTIVE_VIEW.get(sid, {}).pop(msg.get("endpoint") or "", None)
+                elif msg.get("type") == "ping":
+                    # liveness probe from the client's heartbeat — a reply lets it detect a dead
+                    # ("zombie") socket on mobile and reconnect instead of missing events
+                    await websocket.send_json({"kind": "pong"})
                 elif msg.get("type") == "stop":
                     await s.interrupt()
                     await websocket.send_json({"kind": "done"})
