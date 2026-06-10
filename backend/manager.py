@@ -310,6 +310,10 @@ class Manager:
         seed = self._user_seed_local(slug)
         home_local = self.local_ws(sess) / ".chome"
         home_local.mkdir(parents=True, exist_ok=True)
+        # OpenVSCode extensions + settings, PER-USER (shared across all the user's sessions, isolated
+        # between users) so they survive container recreate and follow the user across chats.
+        ovsc_local = self.local_ws(sess).parent / ".ovsc"
+        ovsc_local.mkdir(parents=True, exist_ok=True)
         if not oauth_token:
             self.ensure_user_seed(slug)
             for fn in (".credentials.json",):
@@ -354,9 +358,11 @@ class Manager:
         host_uc = f"{HOST_WORK_ROOT}/context/{key}/user.md"
         host_chat = f"{HOST_WORK_ROOT}/context/{rel}/chat.md"
         host_wiki = f"{HOST_WORK_ROOT}/context/{rel}/wiki.md"
+        host_ovsc = f"{os.path.dirname(sess['host_ws'])}/.ovsc"   # <work>/<user>/.ovsc (per-user)
         vols = [
             "-v", f"{host_home}:/root/.claude",
             "-v", f"{host_cj}:/root/.claude.json",
+            "-v", f"{host_ovsc}:/root/.openvscode-server",
             # NOTE: host SSH keys are NO LONGER mounted into every session (review #3). Fleet access
             # is now an admin-only opt-in mount ("ssh"/"machines"), attached below if requested.
             "-v", f"{sess['host_ws']}:/workspace",
