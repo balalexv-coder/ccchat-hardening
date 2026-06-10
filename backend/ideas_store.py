@@ -2,7 +2,7 @@
 sync across devices (jot a few on a laptop, act on them from a phone). Keyed by session id (sid);
 each value is a list of idea strings. Same atomic-write pattern as push_store / mounts_store.
 
-Corrections ("поправки") are NOT stored here — they auto-send at the next opening and are ephemeral.
+Corrections ("tweaks") are NOT stored here — they auto-send at the next opening and are ephemeral.
 Only the manually-held ideas need to survive a reload and travel between devices.
 """
 import json
