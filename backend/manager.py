@@ -428,12 +428,15 @@ class Manager:
 
     CODE_PORT = 3100
 
-    def ensure_code(self, sess: dict):
+    def ensure_code(self, sess: dict) -> bool:
         """Launch OpenVSCode Server in the session container (lazily), serving /workspace under the
-        /code/<sid> base path. Reached only through the app proxy; the per-session connection token
-        (injected by the proxy) blocks other containers on the shared net from connecting. Blocks
-        until the server answers so the first proxied request doesn't 502."""
+        /code/<sid> base path. Returns True once it answers. Returns False fast if the image predates
+        the editor (a session created before this feature — needs a recreate) so the proxy can show
+        a helpful page instead of blocking ~24s then 502-ing."""
         c = sess["container"]; sid = sess["id"]
+        if "y" not in (_docker("exec", c, "sh", "-c",
+                       "test -x /opt/openvscode-server/bin/openvscode-server && echo y || echo n").stdout or ""):
+            return False                             # old image, no editor — recreate needed
         # "is it up?" = does the port answer (any HTTP code, incl. 401 for the tokenless probe).
         # Checking the port avoids the pgrep -f self-match trap (the check process matches its own
         # command line). The base path is fixed per container (sid never changes), so no staleness.
@@ -443,7 +446,7 @@ class Manager:
                         f"http://127.0.0.1:{self.CODE_PORT}/code/{sid}/ 2>/dev/null || true")
             return (r.stdout or "").strip() not in ("", "000")
         if listening():
-            return
+            return True
         tok = code_token(sid)
         _docker("exec", "-d", c, "sh", "-lc",
                 f"/opt/openvscode-server/bin/openvscode-server --host 0.0.0.0 "
@@ -451,8 +454,9 @@ class Manager:
                 f"--connection-token {tok} >/tmp/code.log 2>&1")
         for _ in range(40):                          # wait until it's listening (cold boot ~3-8s)
             if listening():
-                return
+                return True
             time.sleep(0.4)
+        return False
 
     def ensure_ttyd(self, sess: dict, theme: str = "dark"):
         """Run ttyd inside the session container, attached to the SAME tmux 'main' that claude runs

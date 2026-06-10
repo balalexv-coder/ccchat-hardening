@@ -901,16 +901,30 @@ _CODE_HOP = {"host", "cookie", "set-cookie", "connection", "content-length", "co
              "transfer-encoding", "keep-alive"}
 
 
-async def _code_ip(email: str, sid: str) -> str | None:
+_CODE_RECREATE_HTML = """<!doctype html><html><head><meta charset=utf-8><title>VS Code</title>
+<style>body{font-family:system-ui,sans-serif;background:#1f1e1d;color:#e8e6e3;display:flex;
+min-height:100vh;margin:0;align-items:center;justify-content:center;text-align:center}
+.b{max-width:440px;padding:32px}h2{margin:0 0 12px}p{color:#b8b4ad;line-height:1.6}
+code{background:#2a2826;padding:2px 6px;border-radius:4px}</style></head><body><div class=b>
+<h2>VS Code isn't enabled for this session yet</h2>
+<p>This session's container was created before the in-browser editor was added. Recreate it to
+enable VS Code — click the <b>version badge</b> in the chat header (it'll be yellow), or the
+<b>⟳ Recreate</b> menu item. Your workspace and history are kept.</p>
+<p>Then click <b>Open in VS Code</b> again.</p></div></body></html>"""
+
+
+async def _code_up(email: str, sid: str):
+    """(ip, ready). ip=None -> no session / not running (404). ready=False -> the editor isn't
+    available on this container's image (recreate needed) -> show the helper page, not a 502."""
     sess = mgr._find(email, sid)
     if not sess:
-        return None
+        return None, False
     loop = asyncio.get_event_loop()
     if await loop.run_in_executor(None, mgr.status, sess) != "running":
-        return None
+        return None, False
     await loop.run_in_executor(None, mgr.ensure_running, sess)
-    await loop.run_in_executor(None, mgr.ensure_code, sess)
-    return mgr.web_ip(sess) or None
+    ready = await loop.run_in_executor(None, mgr.ensure_code, sess)
+    return (mgr.web_ip(sess) or None), ready
 
 
 @app.get("/code/{sid}")
@@ -923,9 +937,12 @@ async def code_root(sid: str, request: Request):
 @app.api_route("/code/{sid}/{path:path}",
                methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def code_http(sid: str, path: str, request: Request):
-    ip = await _code_ip(_require_approved(request), sid)
-    if not ip:
+    ip, ready = await _code_up(_require_approved(request), sid)
+    if ip is None:
         raise HTTPException(404, "not found")
+    if not ready:
+        # 200 (not 5xx) so the browser shows THIS page, not Cloudflare's branded gateway interstitial
+        return Response(_CODE_RECREATE_HTML, media_type="text/html", status_code=200)
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _CODE_HOP}
     headers["cookie"] = f"vscode-tkn={code_token(sid)}"
     body = await request.body()
@@ -950,8 +967,8 @@ async def code_ws(ws: WebSocket, sid: str, path: str):
     em = current_user_ws(ws)
     if em is None or not userauth.is_approved(em):
         await ws.close(); return
-    ip = await _code_ip(em, sid)
-    if not ip:
+    ip, ready = await _code_up(em, sid)
+    if ip is None or not ready:
         await ws.close(); return
     await ws.accept()
     qs = urllib.parse.urlencode(dict(ws.query_params))
