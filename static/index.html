@@ -595,6 +595,20 @@
           <button class="primary" id="pwSave">Change password</button>
           <span class="status" id="pwStatus"></span>
         </div>
+        <hr style="border:0;border-top:1px solid var(--line);margin:22px 0">
+        <h3>Notifications</h3>
+        <p class="hint">Get a push when Claude finishes a turn or needs your input — even with the app
+          closed. While you're looking at the session it just chimes instead of buzzing.</p>
+        <div id="notifIosHint" class="hint" style="display:none;border-left:3px solid var(--accent,#c96442);padding-left:10px">
+          On iPhone, notifications work only from the Home-Screen app: tap <b>Share → Add to Home
+          Screen</b>, open ccchat from that icon, then turn this on.</div>
+        <label class="chk-label" title="Push when a task finishes or Claude asks a question">
+          <input type="checkbox" id="notifEnabled"><span>Push notifications</span>
+        </label>
+        <div class="row" style="margin-top:10px">
+          <button class="ghost" id="notifTest" type="button" disabled>Send test</button>
+          <span class="status" id="notifStatus"></span>
+        </div>
       </div>
       <div class="set-pane" data-pane="appearance">
         <h3>Appearance</h3>
@@ -864,6 +878,7 @@ async function openSettings(tab,push){
   $('pwOld').value=$('pwNew').value=$('pwNew2').value=''; $('pwStatus').textContent='';
   renderThemes();   // Appearance tab is available to everyone
   if($('termReplace')) $('termReplace').checked = termLayout()==='replace';
+  refreshNotifUI();
   try{
     const s=await (await fetch('/api/settings')).json();
     if(s.oauth_token_set) $('setTokenStatus').textContent='saved ('+(s.oauth_token_masked||'set')+')';
@@ -877,6 +892,96 @@ async function openSettings(tab,push){
   $('settingsPage').classList.add('open'); $('setToken').focus();
 }
 $('setBtn').onclick=()=>openSettings('account');
+
+// ---------- push notifications ("Claude finished / needs you", even with the app closed)
+const _notifSupported = ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window);
+let _notifOn = false;   // drives the in-tab chime when you're actively viewing a session
+function _isiOS(){ return /iP(hone|ad|od)/.test(navigator.platform)
+  || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints>1)   // iPadOS reports as Mac
+  || /iPhone|iPad|iPod/.test(navigator.userAgent); }
+function _standalone(){ return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone===true; }
+function _b64ToU8(b){ const pad='='.repeat((4-b.length%4)%4); const s=(b+pad).replace(/-/g,'+').replace(/_/g,'/');
+  const raw=atob(s); return Uint8Array.from([...raw].map(c=>c.charCodeAt(0))); }
+async function _curSub(){ const reg=await navigator.serviceWorker.getRegistration(); return reg ? reg.pushManager.getSubscription() : null; }
+
+async function refreshNotifUI(){
+  const cb=$('notifEnabled'), st=$('notifStatus'), hint=$('notifIosHint'), test=$('notifTest');
+  if(!cb) return;
+  const iosNeedsInstall = _isiOS() && !_standalone();
+  hint.style.display = iosNeedsInstall ? 'block' : 'none';
+  if(!_notifSupported || iosNeedsInstall){
+    cb.checked=false; cb.disabled=true; test.disabled=true; _notifOn=false;
+    if(!_notifSupported && !iosNeedsInstall) st.textContent='not supported on this browser';
+    return;
+  }
+  cb.disabled=false;
+  const sub=await _curSub(); _notifOn=!!sub;
+  cb.checked=_notifOn; test.disabled=!_notifOn;
+  st.textContent = _notifOn ? 'on' : (Notification.permission==='denied' ? 'blocked in browser settings' : '');
+}
+async function enableNotif(){
+  const st=$('notifStatus');
+  try{
+    st.textContent='enabling…';
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){ st.textContent = perm==='denied' ? 'blocked in browser settings' : 'not allowed';
+      $('notifEnabled').checked=false; return; }
+    const reg=await navigator.serviceWorker.ready;
+    const key=(await (await fetch('/api/notifications/vapid-key')).json()).key;
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub) sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_b64ToU8(key)});
+    const r=await fetch('/api/notifications/subscribe',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({subscription:sub.toJSON()})});
+    if(!r.ok){ st.textContent='error registering'; $('notifEnabled').checked=false; return; }
+    _notifOn=true; st.textContent='on'; $('notifTest').disabled=false;
+  }catch(e){ console.error('[notif] enable',e); st.textContent='error: '+(e.message||e); $('notifEnabled').checked=false; }
+}
+async function disableNotif(){
+  const st=$('notifStatus');
+  try{
+    const sub=await _curSub();
+    if(sub){ try{ await fetch('/api/notifications/unsubscribe',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({endpoint:sub.endpoint})}); }catch(e){} await sub.unsubscribe(); }
+  }catch(e){ console.error('[notif] disable',e); }
+  _notifOn=false; st.textContent=''; $('notifTest').disabled=true;
+}
+if($('notifEnabled')) $('notifEnabled').onchange=e=>{ e.target.checked ? enableNotif() : disableNotif(); };
+if($('notifTest')) $('notifTest').onclick=async()=>{
+  const st=$('notifStatus'); st.textContent='sending…';
+  try{ const r=await fetch('/api/notifications/test',{method:'POST'}); const j=await r.json().catch(()=>({}));
+    st.textContent = r.ok ? ('sent to '+(j.sent||0)+' device(s)') : ('error: '+(j.detail||r.status)); }
+  catch(e){ st.textContent='error'; }
+};
+
+// in-tab chime when a turn finishes / needs you AND you're actively watching (the server suppresses
+// the OS push in that case, so this is the cue). WebAudio so there's no asset to ship.
+let _actx=null;
+function chime(){
+  if(!_notifOn || document.visibilityState!=='visible') return;
+  try{ _actx=_actx||new (window.AudioContext||window.webkitAudioContext)();
+    if(_actx.state==='suspended') _actx.resume();
+    const o=_actx.createOscillator(), g=_actx.createGain(); o.connect(g); g.connect(_actx.destination);
+    o.type='sine'; o.frequency.value=660;
+    g.gain.setValueAtTime(0.0001,_actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.12,_actx.currentTime+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001,_actx.currentTime+0.28);
+    o.start(); o.stop(_actx.currentTime+0.3);
+  }catch(e){}
+}
+
+// foreground heartbeat: tell the server "I'm watching this session" so it suppresses the OS push
+// (we get the in-tab chime instead). Stops when the tab is hidden → after a short TTL the server
+// resumes sending OS pushes, so a backgrounded/closed app still gets notified.
+function pingActive(){ if(ws && ws.readyState===1 && document.visibilityState==='visible'){ try{ ws.send(JSON.stringify({type:'active'})); }catch(e){} } }
+setInterval(pingActive, 20000);
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') pingActive(); });
+
+// deep-link from a notification tap → open that session
+function openSid(sid){ if(!sid) return; const s=sessions.find(x=>x.id===sid); if(s) openSession(s); }
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('message', e=>{ const m=e.data||{};
+    if(m.type==='open-session') openSid(m.sid); });
+}
 
 // route on URL: /settings[/tab] opens settings, anything else shows chat
 function applyRoute(push){
@@ -1314,9 +1419,9 @@ function handle(ev){switch(ev.kind){
   case 'ready':status.textContent='online';break;
   case 'busy':_busy=true;busyStart(ev.what,ev.ongoing);break;
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;
-  case 'done':_busy=false;busyStop();loadCommands();flushQueue();break;
+  case 'done':_busy=false;busyStop();loadCommands();flushQueue();chime();break;
   case 'wiki':wikiChip(ev);break;
-  case 'choice':busyStop();choiceButtons(ev);break;  // awaiting user click — not 'thinking'
+  case 'choice':busyStop();choiceButtons(ev);chime();break;  // awaiting user click — not 'thinking'
   case 'user':userBubble(ev.text);break;
   case 'assistant':busyWhat('Thinking…');assistantBubble(ev.text);break;
   case 'thinking':busyWhat('Reasoning…');thinking(ev.text);break;
@@ -1339,6 +1444,7 @@ function connect(){
     if(todoEl){todoEl.remove();todoEl=null;}
     pendingChoice=null; renderedChoices.clear();
     _busy=false; busyStop();
+    pingActive();   // mark this session as foreground-watched (suppresses OS push while you look)
   };
   ws.onmessage=e=>{try{const ev=JSON.parse(e.data); console.log('[ws]',ev.kind,ev); handle(ev);}catch(err){console.error('[ws handle error]',err);}};
   ws.onclose=()=>{status.textContent='reconnecting…';setTimeout(()=>{if(cur)connect()},1500)};
@@ -1737,6 +1843,8 @@ function startApp(){
   if(_me){ $('who').innerHTML='Signed in as <b>'+(_me.username||'')+'</b><span class="logout" id="logoutBtn">logout</span>';
     const lb=$('logoutBtn'); if(lb) lb.onclick=doLogout; }
   loadSessions().then(()=>{
+    const qsid=new URLSearchParams(location.search).get('sid');   // deep-link from a notification tap
+    if(qsid){ const s=sessions.find(x=>x.id===qsid); if(s){ openSession(s); history.replaceState({},'', '/chats'); return; } }
     const last=localStorage.getItem('lastSid');
     if(last){ const s=sessions.find(x=>x.id===last); if(s) openSession(s); }
     applyRoute(false);   // honour /settings or /chats from the current URL

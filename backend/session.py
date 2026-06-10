@@ -31,6 +31,9 @@ class Session:
         self._subscribers = set()
         self._alive = True
         self.on_compact = None     # async callback set by app: re-send wiki after a compaction
+        self.on_notify = None      # sync callback set by app: fire a push notification on
+                                   # done / blocked / choice (server-side, so it works when the
+                                   # browser/phone is closed). Called as on_notify(self.sess, ev).
         self._bg_tasks = set()     # strong refs to fire-and-forget tasks so they aren't GC'd
         self._wiki_sent = False
         # wiki: auto-sent on start, must NOT appear in chat — shown as a "wiki loaded (N tokens)" chip
@@ -544,6 +547,7 @@ class Session:
                             self._await_done = False
                             for q in list(self._subscribers):
                                 q.put_nowait({"kind": "done"})
+                            self._fire_notify({"kind": "done"})   # "task finished" push
                     prev_busy = busy
                     # surface a blocking state (auth / rate-limit / workspace-trust) so the UI shows
                     # a clear banner instead of a silent hang (idea from claude-p). Emit on change;
@@ -553,12 +557,15 @@ class Session:
                         self._block_reason = reason
                         for q in list(self._subscribers):
                             q.put_nowait({"kind": "blocked", "reason": reason})
+                        if reason:                              # entered a blocking state → push
+                            self._fire_notify({"kind": "blocked", "reason": reason})
                     # surface a live AskUserQuestion widget as choice buttons (pane is the only
                     # source while it's pending — claude doesn't write it to JSONL until answered)
                     chev = self._choice_from_pane(pane)
                     if chev:
                         for q in list(self._subscribers):
                             q.put_nowait(chev)
+                        self._fire_notify(chev)                 # "needs your answer" push
                     # after the last group is answered the widget shows a Review screen — auto-submit
                     elif "Submit answers" in pane and "Review your answers" in pane:
                         await asyncio.get_event_loop().run_in_executor(None, lambda: _docker(
@@ -620,6 +627,17 @@ class Session:
                 await asyncio.sleep(0.4)
         except Exception as e:
             logging.getLogger("uvicorn.error").exception("[pump %s] %s", self.container, e)
+
+    def _fire_notify(self, ev):
+        """Hand a noteworthy event (done / blocked / choice) to the app-level push hook, if set.
+        Best-effort: a push failure must never break the pump."""
+        cb = self.on_notify
+        if not cb:
+            return
+        try:
+            cb(self.sess, ev)
+        except Exception:
+            pass
 
     def subscribe(self):
         q = asyncio.Queue()

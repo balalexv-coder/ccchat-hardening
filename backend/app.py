@@ -18,7 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import appconfig, mounts_store, settings_store, userauth
+from . import appconfig, mounts_store, notify, push_store, settings_store, userauth
 from .manager import Manager, _email_slug, ttyd_credential, code_token
 from .session import Session
 
@@ -47,6 +47,53 @@ async def _idle_reaper_loop():
                 _teardown_live(r["sid"])
         except Exception:
             pass
+
+
+# ---- "task done / needs you" push notifications --------------------------------------------------
+# The pump (session.py) fires on_notify(sess, ev) on done/blocked/choice — server-side, so it works
+# even when the browser/phone is closed. We suppress the push if the user is actively viewing that
+# session in the foreground (the page plays an in-tab sound instead, so the device you're staring at
+# doesn't also buzz). Foreground is tracked via a lightweight "active" heartbeat over the chat ws.
+ACTIVE_VIEW: dict = {}        # sid -> last foreground-activity timestamp (from the browser)
+ACTIVE_TTL = 35              # seconds a session counts as "being watched" after the last heartbeat
+_NOTIFY_TASKS: set = set()    # strong refs so fire-and-forget push tasks aren't GC'd
+
+
+def _session_notify(sess: dict, ev: dict):
+    """Sync hook called from the pump's event loop — schedule the push without blocking the pump."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    t = loop.create_task(_do_notify(sess, dict(ev)))
+    _NOTIFY_TASKS.add(t)
+    t.add_done_callback(_NOTIFY_TASKS.discard)
+
+
+async def _do_notify(sess: dict, ev: dict):
+    sid = sess.get("id")
+    slug = sess.get("user")
+    if not sid or not slug:
+        return
+    if time.time() - ACTIVE_VIEW.get(sid, 0) < ACTIVE_TTL:
+        return                                       # user is watching this session right now
+    if not push_store.get(slug):
+        return                                       # no registered devices — skip the work
+    name = sess.get("name") or sid[:8]
+    kind = ev.get("kind")
+    if kind == "done":
+        title, body = name, "Claude finished — tap to open."
+    elif kind == "choice":
+        title, body = name, "Claude is asking a question — tap to answer."
+    elif kind == "blocked":
+        title, body = name, f"Session needs attention: {ev.get('reason') or 'blocked'}."
+    else:
+        return
+    payload = {"title": title, "body": body, "sid": sid, "tag": f"{sid}:{kind}"}
+    try:
+        await _to_thread(notify.send_to_user, slug, payload)
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -369,6 +416,46 @@ async def put_settings(request: Request):
     return view
 
 
+@app.get("/api/notifications/vapid-key")
+def notif_vapid_key(request: Request):
+    """The applicationServerKey the browser needs to create a push subscription."""
+    current_user(request)
+    return {"key": notify.public_key()}
+
+
+@app.post("/api/notifications/subscribe")
+async def notif_subscribe(request: Request):
+    email = current_user(request)
+    body = await request.json()
+    sub = body.get("subscription") or body
+    if not isinstance(sub, dict) or not sub.get("endpoint"):
+        raise HTTPException(400, "invalid subscription")
+    push_store.add(_email_slug(email), sub)
+    return {"ok": True}
+
+
+@app.post("/api/notifications/unsubscribe")
+async def notif_unsubscribe(request: Request):
+    email = current_user(request)
+    body = await request.json()
+    ep = (body.get("endpoint") or "").strip()
+    if ep:
+        push_store.remove(_email_slug(email), ep)
+    return {"ok": True}
+
+
+@app.post("/api/notifications/test")
+async def notif_test(request: Request):
+    email = current_user(request)
+    slug = _email_slug(email)
+    if not push_store.get(slug):
+        raise HTTPException(400, "no subscriptions registered on this account")
+    sent = await _to_thread(notify.send_to_user, slug,
+                            {"title": "ccchat", "body": "Test notification — it works \U0001F389",
+                             "sid": "", "tag": "test"})
+    return {"ok": True, "sent": sent}
+
+
 @app.post("/api/stt")
 async def stt(request: Request):
     """Push-to-talk audio → laptop whisper-stt → transcribed text (best Russian quality). The
@@ -499,6 +586,7 @@ def _live(email: str, sid: str) -> Session:
                 await asyncio.sleep(2)  # let the compaction settle
                 await s.send_wiki(wiki)
         s.on_compact = _resend_wiki
+        s.on_notify = _session_notify   # fire push on done/blocked/choice (works with the tab closed)
         LIVE[sid] = s
     # Start the transcript pump only when there's a running event loop. _live() is called from
     # BOTH sync endpoints (/commands, /status) and the async ws handler; creating the task in a
@@ -607,6 +695,10 @@ async def ws(websocket: WebSocket, sid: str):
                             await _to_thread(mgr.reseed_creds, s.sess, only_if_stale=True)
                             await websocket.send_json({"kind": "busy"})
                             await s.send_text(text)
+                elif msg.get("type") == "active":
+                    # foreground heartbeat: this client is watching this session right now, so
+                    # suppress push notifications for it (the page handles them in-tab instead)
+                    ACTIVE_VIEW[sid] = time.time()
                 elif msg.get("type") == "stop":
                     await s.interrupt()
                     await websocket.send_json({"kind": "done"})
