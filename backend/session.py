@@ -6,6 +6,7 @@ Interactive => subscription billing.
 """
 import asyncio
 import glob
+import hashlib
 import json
 import os
 import re
@@ -331,11 +332,22 @@ class Session:
                     continue
                 ct = c.get("type")
                 if ct == "text":
-                    txt = c.get("text", "").strip()
+                    raw = c.get("text", "")
+                    txt = raw.strip()
                     # claude emits this placeholder when a turn is only a tool call — pure noise
                     if not txt or txt == "No response requested.":
                         continue
-                    return {"kind": "assistant", "text": c["text"]}
+                    # ```ask blocks become clickable choice widgets; the rest stays prose. Because
+                    # this rides the normal assistant-text path, the question lands in order and in
+                    # the transcript (survives reload) — no tmux scraping.
+                    clean, asks = self._parse_ask_blocks(raw)
+                    if asks:
+                        out = []
+                        if clean:
+                            out.append({"kind": "assistant", "text": clean})
+                        out.extend(asks)
+                        return out
+                    return {"kind": "assistant", "text": raw}
                 if ct == "thinking" and c.get("thinking", "").strip():
                     return {"kind": "thinking", "text": c["thinking"]}
                 if ct == "tool_use":
@@ -367,6 +379,40 @@ class Session:
                     summary = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
                     return {"kind": "tool_use", "name": name, "text": str(summary)[:400]}
         return None
+
+    _ASK_RE = re.compile(r"```ask\s*\n(.*?)\n?```", re.DOTALL)
+
+    def _parse_ask_blocks(self, text):
+        """Pull ```ask JSON blocks out of assistant text -> (text_without_blocks, [choice events]).
+        Tolerant: a block whose body isn't valid JSON (or lacks options) is left in place and shown
+        as-is — a malformed question degrades to visible text, never a crash."""
+        evs = []
+
+        def repl(m):
+            try:
+                q = json.loads(m.group(1).strip())
+            except Exception:
+                return m.group(0)
+            if not isinstance(q, dict) or not isinstance(q.get("options"), list) or not q["options"]:
+                return m.group(0)
+            opts, descs = [], []
+            for o in q["options"]:
+                if isinstance(o, dict):
+                    opts.append(str(o.get("label", "")))
+                    descs.append(str(o.get("description", "")))
+                else:
+                    opts.append(str(o)); descs.append("")
+            qtext = str(q.get("question", ""))
+            evs.append({
+                "kind": "choice", "from_ask": True,
+                "id": "ask:" + hashlib.md5((qtext + "|" + "|".join(opts)).encode("utf-8")).hexdigest()[:12],
+                "question": qtext, "options": opts, "descriptions": descs,
+                "multi": bool(q.get("multiSelect")), "allow_custom": bool(q.get("allowCustom")),
+            })
+            return ""
+
+        clean = self._ASK_RE.sub(repl, text).strip()
+        return clean, evs
 
     _OPT_RE = re.compile(r"^\s*[❯>]?\s*(\d+)\.\s*(?:\[([ ✔xX])\]\s*)?(.+?)\s*$")
 
@@ -620,8 +666,9 @@ class Session:
                                             q.put_nowait({"kind": "context", "tokens": ctx})
                                 ev = self._parse_line(d)
                                 if ev:
-                                    for q in list(self._subscribers):
-                                        q.put_nowait(ev)
+                                    for _e in (ev if isinstance(ev, list) else [ev]):
+                                        for q in list(self._subscribers):
+                                            q.put_nowait(_e)
                     except OSError:
                         pass
                 await asyncio.sleep(0.4)
@@ -693,7 +740,7 @@ class Session:
                             continue
                         ev = self._parse_line(d)
                         if ev:
-                            evs.append(ev)
+                            evs.extend(ev if isinstance(ev, list) else [ev])
                     self._jsonl_pos = f.tell()
                 self.jsonl_path = path
                 self._pos_by_file[path] = self._jsonl_pos   # remember position for resume (#8)

@@ -1413,6 +1413,7 @@ function choiceButtons(ev){
     if(descs[i]){const d=document.createElement('div'); d.className='cdesc'; d.textContent=descs[i]; b.appendChild(d);}
     b.onclick=()=>{
       if(ev.multi){ b.classList.toggle('on'); picked.has(i)?picked.delete(i):picked.add(i); }
+      else if(ev.from_ask){ sendAskAnswer([opt],box); }
       else{ sendChoice(ev,[i],[opt],box); }
     };
     box.appendChild(b);
@@ -1420,7 +1421,8 @@ function choiceButtons(ev){
   if(ev.multi){
     const div=document.createElement('div'); div.className='cdiv'; box.appendChild(div);
     const ok=document.createElement('button'); ok.className='cbtn okc'; ok.textContent='✓ Confirm selection';
-    ok.onclick=()=>{const idx=[...picked].sort((a,b)=>a-b); sendChoice(ev,idx,idx.map(i=>opts[i]),box)};
+    ok.onclick=()=>{const idx=[...picked].sort((a,b)=>a-b); const labels=idx.map(i=>opts[i]);
+      ev.from_ask ? sendAskAnswer(labels,box) : sendChoice(ev,idx,labels,box)};
     box.appendChild(ok);
   }
   if(ev.allow_custom){
@@ -1429,7 +1431,7 @@ function choiceButtons(ev){
     // questions expect a pick) — reveal the input only when the user asks for it
     const wrap=document.createElement('div'); wrap.className='ccustom-wrap'; wrap.style.display='none';
     const inp=document.createElement('input'); inp.className='ccustom'; inp.type='text'; inp.placeholder='Your answer…';
-    const go=()=>{const t=inp.value.trim(); if(t) sendCustom(ev,t,box);};
+    const go=()=>{const t=inp.value.trim(); if(t){ ev.from_ask ? sendAskAnswer([t],box) : sendCustom(ev,t,box); }};
     inp.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();go();}});
     const sb=document.createElement('button'); sb.className='cbtn okc'; sb.textContent='Send'; sb.onclick=go;
     wrap.appendChild(inp); wrap.appendChild(sb);
@@ -1437,9 +1439,21 @@ function choiceButtons(ev){
     toggle.onclick=()=>{wrap.style.display='flex'; toggle.style.display='none'; inp.focus();};
     box.appendChild(toggle); box.appendChild(wrap);
   }
-  pendingChoice=null;          // a fresh choice always goes to the very bottom...
-  place(box); scroll();
-  pendingChoice=box;           // ...then stays pinned there; later messages insert above it until answered
+  if(ev.from_ask){              // ```ask choice: lives in the transcript in order — don't pin it
+    place(box); scroll();
+  }else{
+    pendingChoice=null;        // a tmux widget always goes to the very bottom...
+    place(box); scroll();
+    pendingChoice=box;         // ...then stays pinned there; later messages insert above it until answered
+  }
+}
+// answer for a ```ask choice: send the chosen label(s) / custom text as a NORMAL user message —
+// the agent ended its turn after asking, so this just continues the conversation (no tmux toggles).
+function sendAskAnswer(labels, box){
+  const text=(labels.join(', ')||'').trim(); if(!text) return;
+  box.querySelectorAll('button,input').forEach(e=>e.disabled=true);
+  const chosen=document.createElement('div'); chosen.className='cchosen'; chosen.textContent='→ '+text; box.appendChild(chosen);
+  _sendQ.push({text, type:'fix'}); renderQueue(); flushQueue();
 }
 function sendChoice(ev,indices,labels,box){
   if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'choice_answer',id:ev.id,answer:indices.join(','),multi:!!ev.multi}));
@@ -1520,7 +1534,10 @@ function handle(ev){switch(ev.kind){
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;
   case 'done':_busy=false;busyStop();loadCommands();flushQueue();chime();break;
   case 'wiki':wikiChip(ev);break;
-  case 'choice':busyStop();choiceButtons(ev);chime();break;  // awaiting user click — not 'thinking'
+  case 'choice':
+    if(ev.from_ask){ choiceButtons(ev); }              // ```ask: in-transcript; 'done' handles busy/chime
+    else { busyStop(); choiceButtons(ev); chime(); }   // live tmux widget — awaiting your click
+    break;
   case 'user':userBubble(ev.text);break;
   case 'assistant':busyWhat('Thinking…');assistantBubble(ev.text);break;
   case 'thinking':busyWhat('Reasoning…');thinking(ev.text);break;

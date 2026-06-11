@@ -655,11 +655,25 @@ class Manager:
         return (CONTEXT_ROOT / "Global.md", CONTEXT_ROOT / key / "user.md",
                 cdir / "chat.md", cdir / "wiki.md")
 
-    # always-on hint so claude prefers the buttons tool when offering choices
-    UI_HINT = ("# UI capability\n"
-               "When you would offer the user a set of options to pick from, use the built-in "
-               "AskUserQuestion tool — this UI renders it as real clickable buttons. Prefer it over "
-               "writing a numbered list in prose. For normal prose answers, just reply as usual.")
+    # always-on hint so claude offers choices as a parseable ```ask block (rendered as buttons).
+    # We use this instead of the built-in AskUserQuestion tool (disabled via --disallowedTools): a
+    # block in normal assistant text flushes to the JSONL immediately and in order, so it renders
+    # correctly and survives reload — unlike the tmux-scraped widget.
+    UI_HINT = (
+        "# Asking the user to choose\n"
+        "When you want the user to pick from options, emit a fenced ```ask block with ONLY JSON "
+        "inside it. The UI renders it as real clickable buttons. Put any explanation as normal prose "
+        "BEFORE the block. Schema:\n"
+        "```ask\n"
+        '{"question": "Short question?", '
+        '"options": [{"label": "Option A", "description": "what it means"}, '
+        '{"label": "Option B", "description": "..."}], '
+        '"multiSelect": false, "allowCustom": true}\n'
+        "```\n"
+        "- `multiSelect: true` → the user can tick several (checkboxes + a Confirm button).\n"
+        "- `allowCustom: true` → the UI also shows a free-text input for a custom answer.\n"
+        "The user's answer comes back as their next message (the chosen label(s), or their custom "
+        "text). Prefer this over a numbered prose list whenever you offer a real choice.")
 
     # always-on hint so claude knows it can reply with images (the UI auto-embeds /workspace paths)
     IMAGE_HINT = ("# Replying with images\n"

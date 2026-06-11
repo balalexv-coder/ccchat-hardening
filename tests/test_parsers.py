@@ -126,6 +126,40 @@ def test_parse_line_hides_wiki_and_its_answer():
     assert ev["kind"] == "wiki" and ev["tokens"] == 10
 
 
+def test_parse_ask_block_to_choice():
+    s = make_session()
+    text = ('Some context first.\n\n```ask\n'
+            '{"question": "Pick?", "options": [{"label": "A", "description": "aa"}, '
+            '{"label": "B"}], "multiSelect": true, "allowCustom": true}\n```')
+    clean, asks = s._parse_ask_blocks(text)
+    assert clean == "Some context first."
+    assert len(asks) == 1
+    ev = asks[0]
+    assert ev["kind"] == "choice" and ev["from_ask"] is True
+    assert ev["question"] == "Pick?"
+    assert ev["options"] == ["A", "B"] and ev["descriptions"] == ["aa", ""]
+    assert ev["multi"] is True and ev["allow_custom"] is True
+    assert ev["id"].startswith("ask:")
+
+
+def test_parse_ask_block_malformed_is_left_as_text():
+    s = make_session()
+    text = "before\n```ask\nnot valid json\n```\nafter"
+    clean, asks = s._parse_ask_blocks(text)
+    assert asks == []
+    assert "```ask" in clean        # malformed block stays visible, never crashes
+
+
+def test_parse_line_splits_text_and_ask():
+    s = make_session()
+    d = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": 'Prose.\n\n```ask\n{"question":"Q?","options":[{"label":"X"}]}\n```'}]}}
+    out = s._parse_line(d)
+    assert isinstance(out, list) and len(out) == 2
+    assert out[0] == {"kind": "assistant", "text": "Prose."}
+    assert out[1]["kind"] == "choice" and out[1]["from_ask"] is True
+
+
 def test_parse_line_hides_askuserquestion_tool_use():
     s = make_session()
     d = {"type": "assistant", "message": {"role": "assistant",
