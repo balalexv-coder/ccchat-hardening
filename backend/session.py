@@ -725,6 +725,12 @@ class Session:
                 pass
         return cmds
 
+    # Cap how much of the transcript we replay to a (re)connecting client. We still scan the whole
+    # file (so parser state and the pump's resume position stay correct) but only SEND the tail —
+    # a huge transcript (e.g. 24MB = thousands of events) otherwise floods the browser into a heavy
+    # render/flicker on every (re)connect. Normal sessions are well under this and are unaffected.
+    HISTORY_MAX_EVENTS = 400
+
     def history(self):
         evs = []
         path = self._current_jsonl()
@@ -746,6 +752,12 @@ class Session:
                 self._pos_by_file[path] = self._jsonl_pos   # remember position for resume (#8)
             except OSError:
                 pass
+        if len(evs) > self.HISTORY_MAX_EVENTS:
+            hidden = len(evs) - self.HISTORY_MAX_EVENTS
+            evs = evs[-self.HISTORY_MAX_EVENTS:]
+            evs.insert(0, {"kind": "info",
+                           "text": f"… {hidden} older messages hidden — showing the latest "
+                                   f"{self.HISTORY_MAX_EVENTS}. The full transcript lives in the session file."})
         return evs
 
     def last_context_tokens(self):
