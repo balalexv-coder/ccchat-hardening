@@ -1363,13 +1363,13 @@ document.addEventListener('click',e=>{
 function assistantBubble(text){
   const d=document.createElement('div'); d.className='msg assistant md';
   if(window.marked){
-    const parts=[];let last=0,re=/```mermaid\s*([\s\S]*?)```/g,m;
+    const parts=[];let last=0,re=/```mermaid[ \t]*\r?\n([\s\S]*?)```/g,m;
     while((m=re.exec(text))){parts.push({md:text.slice(last,m.index)});parts.push({mer:m[1].trim()});last=re.lastIndex}
     parts.push({md:text.slice(last)});
     for(const p of parts){
       if(p.md!==undefined&&p.md.trim()){const s=document.createElement('div');s.innerHTML=mdSafe(imgify(p.md));d.appendChild(s)}
       if(p.mer!==undefined){const b=document.createElement('div');b.className='mermaid';
-        mermaid.render('mm'+(++_mm),p.mer).then(r=>{b.innerHTML=svgSafe(r.svg);scroll()}).catch(()=>{b.textContent=p.mer});d.appendChild(b)}
+        const _rid='mm'+(++_mm); if(p.mer){mermaid.render(_rid,p.mer).then(r=>{b.innerHTML=svgSafe(r.svg);scroll()}).catch(()=>{b.textContent=p.mer;var o=document.getElementById('d'+_rid)||document.getElementById(_rid);if(o&&o.parentNode)o.parentNode.removeChild(o);});}else{b.textContent=p.mer;} d.appendChild(b)}
     }
   }else{d.textContent=text;d.classList.remove('md')}
   place(d);scroll();return d;
