@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Mermaid viewer</title>
+<link rel="icon" href="/icon.svg">
+<script src="/lib/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e3e6ea;
+    --accent:#2563eb; --src-bg:#0f1115; --src-ink:#d7dbe0;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#15171b; --panel:#1c1f24; --ink:#e6e9ee; --muted:#9aa3ad; --line:#2a2e35;
+           --accent:#5b8cff; --src-bg:#0c0e12; --src-ink:#cdd3da; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink);
+       background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+  /* toolbar */
+  .bar{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--panel);
+       border-bottom:1px solid var(--line);flex:0 0 auto;flex-wrap:wrap}
+  .bar .title{font-weight:600;margin-right:auto;display:flex;align-items:center;gap:7px}
+  .bar .title small{color:var(--muted);font-weight:400}
+  button.tb{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--bg);
+       color:var(--ink);border-radius:7px;padding:5px 9px;line-height:1}
+  button.tb:hover{border-color:var(--accent)}
+  button.tb:active{transform:translateY(1px)}
+  .zwrap{display:flex;align-items:center;gap:4px}
+  .zlvl{min-width:48px;text-align:center;color:var(--muted);font-variant-numeric:tabular-nums}
+  /* body */
+  .main{flex:1 1 auto;display:flex;min-height:0}
+  .src{flex:0 0 var(--srcw,340px);max-width:60%;display:flex;flex-direction:column;
+       background:var(--src-bg);border-right:1px solid var(--line);transition:flex-basis .18s ease}
+  .src.collapsed{flex-basis:0;border-right:0;overflow:hidden}
+  .src .sh{display:flex;align-items:center;gap:6px;padding:6px 10px;color:var(--src-ink);
+       border-bottom:1px solid rgba(255,255,255,.08);font-size:12px;opacity:.85}
+  .src pre{margin:0;flex:1;overflow:auto;padding:10px 12px;color:var(--src-ink);
+       font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre;tab-size:2}
+  /* stage */
+  .stage{flex:1 1 auto;position:relative;overflow:hidden;background:
+     radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0) 0 0/22px 22px var(--bg);
+     touch-action:none;cursor:grab}
+  .stage.drag{cursor:grabbing}
+  .canvas{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+  .canvas svg{display:block;max-width:none!important;height:auto}
+  .err{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:20px}
+  .err pre{max-width:90%;max-height:90%;overflow:auto;background:var(--panel);border:1px solid var(--line);
+       color:#c0392b;border-radius:8px;padding:14px;white-space:pre-wrap}
+  .hint{position:absolute;left:10px;bottom:10px;color:var(--muted);font-size:11px;
+       background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 7px;opacity:.85}
+  /* Mobile: one full-screen mode at a time, toggled (diagram <-> source) instead of side-by-side */
+  @media (max-width:700px){
+    .main{position:relative}
+    .stage{position:absolute;inset:0}
+    .src{position:absolute;inset:0;flex:1 1 auto;max-width:none;border-right:0;z-index:3}
+    .src.collapsed{display:none}
+    .hint{display:none}
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div class="title">📊 Mermaid <small id="dtype"></small></div>
+    <button class="tb" id="toggleSrc" title="Show/hide source (\\)">⟨ Source</button>
+    <div class="zwrap">
+      <button class="tb" id="zout" title="Zoom out (−)">−</button>
+      <span class="zlvl" id="zlvl">100%</span>
+      <button class="tb" id="zin" title="Zoom in (+)">+</button>
+    </div>
+    <button class="tb" id="fit" title="Fit to screen (0)">Fit</button>
+    <button class="tb" id="reset" title="Reset to 100% (1)">100%</button>
+    <button class="tb" id="theme" title="Toggle theme">◐</button>
+    <button class="tb" id="dl" title="Download SVG">⤓ SVG</button>
+  </div>
+  <div class="main">
+    <aside class="src" id="src">
+      <div class="sh"><span>source.mmd</span></div>
+      <pre id="srcText"></pre>
+    </aside>
+    <div class="stage" id="stage">
+      <div class="canvas" id="canvas"></div>
+      <div class="hint">drag to pan · wheel/pinch to zoom</div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+  // ---- decode the mermaid source from the URL hash (never sent to the server) ----
+  function fromHash(){
+    var h = location.hash.slice(1);
+    if(!h) return "";
+    try{ return decodeURIComponent(escape(atob(decodeURIComponent(h)))); }
+    catch(e){ try{ return decodeURIComponent(h); }catch(_){ return h; } }
+  }
+  var source = fromHash();
+  var srcText = document.getElementById('srcText');
+  srcText.textContent = source || "(no diagram source in URL)";
+
+  // diagram type hint (first meaningful token)
+  var firstLine = (source.split('\n').find(function(l){return l.trim() && !l.trim().startsWith('%%');})||'').trim();
+  var dtype = (firstLine.match(/^[A-Za-z][\w-]*/)||[''])[0];
+  if(dtype){ document.getElementById('dtype').textContent = '· '+dtype; document.title = 'Mermaid · '+dtype; }
+
+  function sanitizeSvg(svg){
+    return window.DOMPurify ? DOMPurify.sanitize(svg,{USE_PROFILES:{svg:true,svgFilters:true,html:true}}) : '';
+  }
+
+  var canvas = document.getElementById('canvas');
+  var stage  = document.getElementById('stage');
+  // Default to the light theme: it renders dark text/edges that stay readable on the light "paper"
+  // below even if SVG sanitisation drops some of mermaid's embedded label styles. (A dark theme on a
+  // dark surface could leave labels invisible.)
+  var curTheme = 'default';
+  var svgEl = null, natW = 0, natH = 0;
+
+  // Render the diagram on its own paper so edge labels (which sit outside nodes) are always legible,
+  // regardless of the page's dark chrome.
+  function applyPaper(){
+    var dark = curTheme === 'dark';
+    canvas.style.background   = dark ? '#1e1e22' : '#ffffff';
+    canvas.style.padding      = '12px';
+    canvas.style.borderRadius = '8px';
+    canvas.style.boxShadow    = '0 1px 8px rgba(0,0,0,.30)';
+  }
+
+  function renderDiagram(){
+    if(!window.mermaid){ showErr('mermaid failed to load (check network).'); return; }
+    mermaid.initialize({startOnLoad:false, theme:curTheme, securityLevel:'strict'});
+    var id = 'mmv'+Date.now();
+    mermaid.render(id, source).then(function(r){
+      canvas.innerHTML = sanitizeSvg(r.svg);
+      svgEl = canvas.querySelector('svg');
+      applyPaper();
+      measure();
+      fit();
+    }).catch(function(e){ showErr(String(e && e.message || e)); });
+  }
+  function showErr(msg){
+    canvas.innerHTML='';
+    var d=document.createElement('div'); d.className='err';
+    var p=document.createElement('pre'); p.textContent='Render error:\n\n'+msg+'\n\n— source shown on the left —';
+    d.appendChild(p); stage.appendChild(d);
+  }
+  function measure(){
+    if(!svgEl) return;
+    // prefer the viewBox for true intrinsic size, fall back to bbox
+    var vb = svgEl.getAttribute('viewBox');
+    if(vb){ var p=vb.split(/[ ,]+/).map(Number); natW=p[2]; natH=p[3]; }
+    else { var b=svgEl.getBBox(); natW=b.width; natH=b.height; }
+    // let the SVG size itself to natural pixels; we scale via the canvas transform
+    svgEl.removeAttribute('width'); svgEl.removeAttribute('height');
+    svgEl.style.width = natW+'px'; svgEl.style.height = natH+'px';
+  }
+
+  // ---- pan / zoom state ----
+  var scale=1, tx=0, ty=0;
+  var MIN=0.05, MAX=40;
+  function apply(){
+    canvas.style.transform = 'translate('+tx+'px,'+ty+'px) scale('+scale+')';
+    document.getElementById('zlvl').textContent = Math.round(scale*100)+'%';
+  }
+  function zoomAt(cx, cy, factor){
+    var ns = Math.min(MAX, Math.max(MIN, scale*factor));
+    if(ns===scale) return;
+    // keep the point under the cursor fixed
+    tx = cx - (cx - tx) * (ns/scale);
+    ty = cy - (cy - ty) * (ns/scale);
+    scale = ns; apply();
+  }
+  function fit(){
+    if(!natW||!natH){ apply(); return; }
+    var r = stage.getBoundingClientRect();
+    var pad = 40;
+    var s = Math.min((r.width-pad)/natW, (r.height-pad)/natH);
+    s = Math.min(MAX, Math.max(MIN, s));
+    scale = s;
+    tx = (r.width  - natW*s)/2;
+    ty = (r.height - natH*s)/2;
+    apply();
+  }
+  function resetZoom(){
+    var r = stage.getBoundingClientRect();
+    scale=1; tx=(r.width-natW)/2; ty=(r.height-natH)/2; if(tx<10)tx=20; if(ty<10)ty=20; apply();
+  }
+
+  // wheel zoom (ctrl/⌘ or plain wheel both zoom here, since the page is a viewer)
+  stage.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var r = stage.getBoundingClientRect();
+    var factor = Math.exp(-e.deltaY * 0.0015);
+    zoomAt(e.clientX-r.left, e.clientY-r.top, factor);
+  }, {passive:false});
+
+  // pointer pan + pinch zoom (mouse + touch unified)
+  var pts = new Map(), panLast=null, pinchLast=null;
+  stage.addEventListener('pointerdown', function(e){
+    stage.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    if(pts.size===1){ panLast={x:e.clientX, y:e.clientY}; stage.classList.add('drag'); }
+    else if(pts.size===2){ pinchLast=pinchInfo(); panLast=null; }
+  });
+  stage.addEventListener('pointermove', function(e){
+    if(!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    if(pts.size===1 && panLast){
+      tx += e.clientX-panLast.x; ty += e.clientY-panLast.y;
+      panLast={x:e.clientX, y:e.clientY}; apply();
+    } else if(pts.size===2 && pinchLast){
+      var pi=pinchInfo(), r=stage.getBoundingClientRect();
+      if(pinchLast.dist>0) zoomAt(pi.cx-r.left, pi.cy-r.top, pi.dist/pinchLast.dist);
+      pinchLast=pi;
+    }
+  });
+  function endPtr(e){
+    pts.delete(e.pointerId);
+    if(pts.size<2) pinchLast=null;
+    if(pts.size===0){ panLast=null; stage.classList.remove('drag'); }
+    else if(pts.size===1){ var p=pts.values().next().value; panLast={x:p.x,y:p.y}; }
+  }
+  stage.addEventListener('pointerup', endPtr);
+  stage.addEventListener('pointercancel', endPtr);
+  function pinchInfo(){
+    var a=[...pts.values()]; var dx=a[0].x-a[1].x, dy=a[0].y-a[1].y;
+    return {dist:Math.hypot(dx,dy), cx:(a[0].x+a[1].x)/2, cy:(a[0].y+a[1].y)/2};
+  }
+
+  // ---- toolbar ----
+  function centerZoom(f){ var r=stage.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, f); }
+  document.getElementById('zin').onclick   = function(){ centerZoom(1.25); };
+  document.getElementById('zout').onclick  = function(){ centerZoom(1/1.25); };
+  document.getElementById('fit').onclick   = fit;
+  document.getElementById('reset').onclick = resetZoom;
+  // Source toggle. Desktop: collapse the left pane. Mobile: switch between two full-screen
+  // modes (the .src overlay covers the diagram when shown; hidden -> diagram is visible).
+  var srcEl = document.getElementById('src'), toggleBtn = document.getElementById('toggleSrc');
+  function isMobile(){ return matchMedia('(max-width:700px)').matches; }
+  function updateToggleLabel(){
+    var hidden = srcEl.classList.contains('collapsed');
+    // label shows what you'll switch TO
+    if(isMobile()) toggleBtn.textContent = hidden ? '◧ Source' : '◧ Diagram';
+    else           toggleBtn.textContent = hidden ? 'Source ⟩' : '⟨ Source';
+  }
+  toggleBtn.onclick = function(){
+    srcEl.classList.toggle('collapsed');
+    updateToggleLabel();
+    if(isMobile() && srcEl.classList.contains('collapsed')) fit();   // back to diagram -> refit
+  };
+  // start on the diagram on mobile (source hidden), side-by-side on desktop
+  if(isMobile()) srcEl.classList.add('collapsed');
+  updateToggleLabel();
+  addEventListener('resize', updateToggleLabel);
+  document.getElementById('theme').onclick = function(){
+    curTheme = (curTheme==='dark') ? 'default' : 'dark';
+    renderDiagram();
+  };
+  document.getElementById('dl').onclick = function(){
+    if(!svgEl) return;
+    var blob = new Blob([svgEl.outerHTML], {type:'image/svg+xml'});
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=(dtype||'diagram')+'.svg'; a.click(); URL.revokeObjectURL(a.href);
+  };
+  addEventListener('keydown', function(e){
+    if(e.key==='\\') document.getElementById('toggleSrc').click();
+    else if(e.key==='0') fit();
+    else if(e.key==='1') resetZoom();
+    else if(e.key==='+'||e.key==='=') centerZoom(1.25);
+    else if(e.key==='-') centerZoom(1/1.25);
+  });
+  addEventListener('resize', function(){ /* keep current transform; user can hit Fit */ });
+
+  if(source) renderDiagram(); else showErr('No diagram source was provided in the URL.');
+})();
+</script>
+</body>
+</html>

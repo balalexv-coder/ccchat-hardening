@@ -192,7 +192,16 @@
   .md th,.md td{border:1px solid var(--line);padding:5px 9px;text-align:left}.md th{background:var(--code-bg)}
   .md a{color:var(--accent)}
   .md blockquote{border-left:3px solid var(--line);margin:.4em 0;padding-left:10px;color:var(--muted)}
-  .mermaid{background:#ffffff;border-radius:8px;padding:8px;margin:.5em 0;overflow-x:auto}
+  .mmcard{display:flex;align-items:center;gap:10px;margin:.5em 0;padding:9px 12px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    text-decoration:none;color:var(--txt);transition:border-color .12s,transform .05s}
+  .mmcard:hover{border-color:var(--accent)}
+  .mmcard:active{transform:translateY(1px)}
+  .mmcard .mmico{font-size:20px;line-height:1}
+  .mmcard .mmbody{display:flex;flex-direction:column;min-width:0;flex:1}
+  .mmcard .mmbody b{font-weight:600}
+  .mmcard .mmbody small{color:var(--muted);font-size:12px}
+  .mmcard .mmgo{color:var(--accent);font-size:16px;opacity:.8}
   .thinking{align-self:flex-start;background:transparent;border:1px dashed var(--line);color:var(--muted);font-size:12px}
   .thinking summary{cursor:pointer;color:var(--muted)}
   .tool{align-self:flex-start;background:var(--code-bg);border:1px solid var(--line);color:var(--accent);font-family:ui-monospace,monospace;font-size:12px;border-radius:8px;max-width:90%;white-space:pre-wrap;word-break:break-word}
@@ -1342,7 +1351,18 @@ function userBubble(text){
   }
   return bubble('user',text);
 }
-let _mm=0;
+// Render a ```mermaid block as a link card opening the standalone viewer (/mermaid.html) in a new
+// tab. The diagram source travels in the URL hash, so it is never sent to the server.
+function mmURL(src){ return '/mermaid.html#'+encodeURIComponent(btoa(unescape(encodeURIComponent(src)))); }
+function mermaidCard(src){
+  const a=document.createElement('a');
+  a.className='mmcard'; a.href=mmURL(src); a.target='_blank'; a.rel='noopener';
+  const first=(src.split('\n').find(l=>l.trim()&&!l.trim().startsWith('%%'))||'').trim();
+  const t=(first.match(/^[A-Za-z][\w-]*/)||[''])[0];
+  a.innerHTML='<span class="mmico">📊</span><span class="mmbody"><b>Open Mermaid diagram</b>'
+    +'<small>'+(t?esc(t)+' · ':'')+'opens in a new tab — zoom &amp; pan</small></span><span class="mmgo">↗</span>';
+  return a;
+}
 // turn /workspace/...image paths into markdown images served via our file endpoint, so they
 // render as inline previews (web URLs in markdown already work natively).
 const IMG_RE=/\/workspace\/[^\s)\]]+\.(?:png|jpe?g|gif|webp|svg|bmp)/gi;
@@ -1368,8 +1388,7 @@ function assistantBubble(text){
     parts.push({md:text.slice(last)});
     for(const p of parts){
       if(p.md!==undefined&&p.md.trim()){const s=document.createElement('div');s.innerHTML=mdSafe(imgify(p.md));d.appendChild(s)}
-      if(p.mer!==undefined){const b=document.createElement('div');b.className='mermaid';
-        const _rid='mm'+(++_mm); if(p.mer){mermaid.render(_rid,p.mer).then(r=>{b.innerHTML=svgSafe(r.svg);scroll()}).catch(()=>{b.textContent=p.mer;var o=document.getElementById('d'+_rid)||document.getElementById(_rid);if(o&&o.parentNode)o.parentNode.removeChild(o);});}else{b.textContent=p.mer;} d.appendChild(b)}
+      if(p.mer!==undefined&&p.mer){d.appendChild(mermaidCard(p.mer))}
     }
   }else{d.textContent=text;d.classList.remove('md')}
   place(d);scroll();return d;

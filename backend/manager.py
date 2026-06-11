@@ -685,6 +685,17 @@ class Manager:
                   ".svg you write directly — then reference its path. For images already on the public "
                   "web, a normal Markdown image works: ![alt](https://...). Only reference files that exist.")
 
+    # how diagrams render in this UI (part of the baked base prompt)
+    MERMAID_HINT = ("# Diagrams (Mermaid)\n"
+                    "When a diagram helps (flowchart, sequence, class, state, ER, gantt, mindmap, etc.), "
+                    "output it as a fenced ```mermaid code block with valid Mermaid syntax — one diagram "
+                    "per block, and the opening fence line must be exactly ```mermaid on its own line "
+                    "(content starts on the next line). You do NOT render it yourself: the UI turns each "
+                    "such block into a link card that opens a dedicated viewer in a new browser tab "
+                    "(collapsible source on the left, the rendered diagram on the right with zoom and pan). "
+                    "Keep the block to pure Mermaid source — no surrounding ASCII art or pre-rendered SVG "
+                    "— and prefer this over ASCII diagrams for anything non-trivial.")
+
     # note about the editable context files (part of the baked base prompt)
     FILES_NOTE = (
         "# Your context files (editable)\n"
@@ -712,7 +723,7 @@ class Manager:
         """The static system-baked part of the prompt (UI/image hints + the editable-files note).
         Shown as base.md in the viewer. Mount blurbs live in their own `mounts` view; Global/user/chat
         have their own tabs — so base.md doesn't duplicate any of them."""
-        return "\n\n".join([self.UI_HINT, self.IMAGE_HINT, self.FILES_NOTE])
+        return "\n\n".join([self.UI_HINT, self.IMAGE_HINT, self.MERMAID_HINT, self.FILES_NOTE])
 
     def mounts_prompt(self, sess: dict) -> str:
         """What this session's attached mounts contribute to the prompt + how they map into the
