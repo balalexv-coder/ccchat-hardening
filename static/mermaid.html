@@ -29,6 +29,7 @@
        color:var(--ink);border-radius:7px;padding:5px 9px;line-height:1}
   button.tb:hover{border-color:var(--accent)}
   button.tb:active{transform:translateY(1px)}
+  button.tb.close{color:var(--accent);border-color:var(--accent);font-weight:700}
   .zwrap{display:flex;align-items:center;gap:4px}
   .zlvl{min-width:48px;text-align:center;color:var(--muted);font-variant-numeric:tabular-nums}
   /* body */
@@ -64,6 +65,7 @@
 </head>
 <body>
   <div class="bar">
+    <button class="tb close" id="close" title="Close (back to chat)">✕ Close</button>
     <div class="title">📊 Mermaid <small id="dtype"></small></div>
     <button class="tb" id="toggleSrc" title="Show/hide source (\\)">⟨ Source</button>
     <div class="zwrap">
@@ -230,6 +232,15 @@
   }
 
   // ---- toolbar ----
+  // Close: try to close this tab (works when the viewer was opened by script / is a fresh tab).
+  // If the browser refuses (many mobile browsers won't let a script close a link-opened tab), fall
+  // back to going back to the chat — so on a phone there's always a one-tap way out.
+  document.getElementById('close').onclick = function(){
+    window.close();
+    setTimeout(function(){
+      if(history.length > 1) history.back(); else location.href = '/';
+    }, 150);
+  };
   function centerZoom(f){ var r=stage.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, f); }
   document.getElementById('zin').onclick   = function(){ centerZoom(1.25); };
   document.getElementById('zout').onclick  = function(){ centerZoom(1/1.25); };
