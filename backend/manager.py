@@ -694,8 +694,13 @@ class Manager:
         "(edits affect every session of theirs).\n"
         "- `chat.md` — extra system-prompt context for THIS session only.\n"
         "- `wiki.md` — notes auto-sent as the first message on session start and re-sent after "
-        "/clear or a compaction (a durable scratchpad that survives context resets). Keep it "
-        "concise. Changes to user.md/chat.md take effect on the next session (re)start.\n"
+        "/clear or a compaction (a durable scratchpad that survives context resets). It is a "
+        "scratchpad, NOT your long-term memory store — keep it concise, and edit it ONLY when the "
+        "user explicitly asks you to, never on your own initiative.\n"
+        "Changes to user.md/chat.md take effect on the next session (re)start.\n"
+        "For reference: this 'context files' note, together with the UI/image hints above, is the "
+        "static code-defined part of the prompt that the viewer labels `base.md` — it is baked in "
+        "and cannot be edited from within a session.\n"
         "(There is also a shared Global.md above that you cannot edit — it's managed centrally.)")
 
     def _mount_blurbs(self, sess: dict):
