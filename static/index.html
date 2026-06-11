@@ -206,6 +206,7 @@
   .choice .cbtn:hover{background:var(--hover);border-color:var(--accent)}
   .choice .cbtn .clab{font-size:14px}
   .choice .cbtn .cdesc{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.35;white-space:normal}
+  .choice .cbtn .cchk{margin-right:7px;opacity:.9}        /* ☐/☑ checkbox for multi-select options */
   .choice .cbtn.on{border-color:var(--ok);color:var(--ok)}
   .choice .cbtn.on .cdesc{color:var(--ok);opacity:.8}
   .choice .ccustom-toggle{align-self:flex-start;background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:2px 0;text-decoration:underline}
@@ -1408,11 +1409,13 @@ function choiceButtons(ev){
   if(ev.question){const q=document.createElement('div');q.className='cq';q.textContent=ev.question;box.appendChild(q)}
   const opts=ev.options||[]; const descs=ev.descriptions||[]; const picked=new Set();
   opts.forEach((opt,i)=>{
-    const b=document.createElement('button'); b.className='cbtn';
-    const lab=document.createElement('div'); lab.className='clab'; lab.textContent=opt; b.appendChild(lab);
+    const b=document.createElement('button'); b.className='cbtn'+(ev.multi?' multi':'');
+    const lab=document.createElement('div'); lab.className='clab';
+    if(ev.multi){ const ck=document.createElement('span'); ck.className='cchk'; ck.textContent='☐'; lab.appendChild(ck); }
+    lab.appendChild(document.createTextNode(opt)); b.appendChild(lab);
     if(descs[i]){const d=document.createElement('div'); d.className='cdesc'; d.textContent=descs[i]; b.appendChild(d);}
     b.onclick=()=>{
-      if(ev.multi){ b.classList.toggle('on'); picked.has(i)?picked.delete(i):picked.add(i); }
+      if(ev.multi){ const on=b.classList.toggle('on'); const ck=b.querySelector('.cchk'); if(ck)ck.textContent=on?'☑':'☐'; picked.has(i)?picked.delete(i):picked.add(i); }
       else if(ev.from_ask){ sendAskAnswer([opt],box); }
       else{ sendChoice(ev,[i],[opt],box); }
     };
