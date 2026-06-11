@@ -132,7 +132,11 @@
 
   function renderDiagram(){
     if(!window.mermaid){ showErr('mermaid failed to load (check network).'); return; }
-    mermaid.initialize({startOnLoad:false, theme:curTheme, securityLevel:'strict'});
+    // htmlLabels:false → labels are rendered as plain SVG <text>, not <foreignObject> HTML. The
+    // foreignObject route gets stripped by our DOMPurify SVG sanitisation, which is why labels were
+    // vanishing. SVG text survives the sanitiser and is themeable.
+    mermaid.initialize({startOnLoad:false, theme:curTheme, securityLevel:'strict',
+                        htmlLabels:false, flowchart:{htmlLabels:false}, class:{htmlLabels:false}});
     var id = 'mmv'+Date.now();
     mermaid.render(id, source).then(function(r){
       canvas.innerHTML = sanitizeSvg(r.svg);
