@@ -1532,14 +1532,14 @@ function showBlocker(reason){
 function handle(ev){switch(ev.kind){
   case 'blocked':showBlocker(ev.reason);break;
   case 'context':{const c=$('ctxSize'); if(c) c.innerHTML='<span class="ic">⊟</span>'+Math.round(ev.tokens/1000)+'k';}break;
-  case 'ready':status.textContent='online';break;
+  case 'ready':status.textContent='online';_replaying=false;loadCommands();flushQueue();break;
   case 'busy':_busy=true;busyStart(ev.what,ev.ongoing);break;
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;
-  case 'done':_busy=false;busyStop();loadCommands();flushQueue();chime();break;
+  case 'done':_busy=false;busyStop();if(!_replaying){loadCommands();flushQueue();chime();}break;
   case 'wiki':wikiChip(ev);break;
   case 'choice':
     if(ev.from_ask){ choiceButtons(ev); }              // ```ask: in-transcript; 'done' handles busy/chime
-    else { busyStop(); choiceButtons(ev); chime(); }   // live tmux widget — awaiting your click
+    else { busyStop(); choiceButtons(ev); if(!_replaying) chime(); }   // live tmux widget — awaiting your click
     break;
   case 'user':userBubble(ev.text);break;
   case 'assistant':busyWhat('Thinking…');assistantBubble(ev.text);break;
@@ -1557,6 +1557,11 @@ function handle(ev){switch(ev.kind){
 // fine). We ping every 15s and require a reply; an unanswered ping means the socket is dead → force
 // close → reconnect (which replays fresh state and clears any stale indicator).
 let _hbInt=null, _awaitingPong=false;
+// True while the server replays the FULL transcript on (re)connect (until the 'ready' event). During
+// replay we must NOT fire per-event side-effects — loadCommands() (storms /commands), chime() (buzzes
+// on every historical turn) or flushQueue() — which on a long transcript pegged the server and blocked
+// the main thread (→ missed heartbeats → reconnect → replay → storm again).
+let _replaying=false;
 function stopHeartbeat(){ if(_hbInt){clearInterval(_hbInt);_hbInt=null;} _awaitingPong=false; }
 function startHeartbeat(){
   stopHeartbeat();
@@ -1583,6 +1588,7 @@ function connect(){
   status.textContent='connecting…';
   ws=new WebSocket(`${proto}://${location.host}/ws/${cur.id}`);
   ws.onopen=()=>{ status.textContent='connected';
+    _replaying=true;   // history replay starts now; cleared on the 'ready' event (suppresses side-effects)
     // the server replays the FULL transcript on every (re)connect — clear first so a reconnect
     // doesn't duplicate the history (and reset the busy flag so queued sends aren't blocked)
     log.querySelectorAll('.msg').forEach(e=>e.remove());
@@ -1593,7 +1599,7 @@ function connect(){
     startHeartbeat();
   };
   ws.onmessage=e=>{ _awaitingPong=false;   // any message proves the socket is alive
-    try{const ev=JSON.parse(e.data); if(ev.kind==='pong') return; console.log('[ws]',ev.kind,ev); handle(ev);}catch(err){console.error('[ws handle error]',err);}};
+    try{const ev=JSON.parse(e.data); if(ev.kind==='pong') return; if(!_replaying) console.log('[ws]',ev.kind,ev); handle(ev);}catch(err){console.error('[ws handle error]',err);}};
   ws.onclose=()=>{stopHeartbeat();status.textContent='reconnecting…';setTimeout(()=>{if(cur)connect()},1500)};
   ws.onerror=()=>ws.close();
 }
