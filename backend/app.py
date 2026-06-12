@@ -53,12 +53,15 @@ async def _idle_reaper_loop():
 
 # ---- "task done / needs you" push notifications --------------------------------------------------
 # The pump (session.py) fires on_notify(sess, ev) on done/blocked/choice — server-side, so it works
-# even when the browser/phone is closed. Suppression is PER-DEVICE, not per-session: a device only
-# stops buzzing while THAT device is the one actively looking at the session (it plays an in-tab
-# chime instead). Every other registered device (e.g. your phone) still gets the push — so an open
-# tab on your laptop never silences your phone. Foreground is tracked via an "active" heartbeat over
-# the chat ws that carries the browser's own push-subscription endpoint.
+# even when the browser/phone is closed. The push targets ONLY the device that sent the last message
+# in this session (tracked as LAST_SENDER) — so chatting from your laptop never buzzes your phone. If
+# that device is currently foreground-watching, it chimes in-tab instead of pushing (foreground is
+# tracked via an "active" heartbeat over the chat ws carrying the browser's push-subscription
+# endpoint). Fallback: if no message has been sent this runtime (e.g. right after a restart), notify
+# every registered device except those foreground-watching.
 ACTIVE_VIEW: dict = {}        # sid -> {push endpoint: last foreground-activity timestamp}
+LAST_SENDER: dict = {}        # sid -> push endpoint of the device that sent the most recent message
+                              # ('' if that device has notifications off; absent until first message)
 ACTIVE_TTL = 35              # seconds a device counts as "watching" after its last heartbeat
 _NOTIFY_TASKS: set = set()    # strong refs so fire-and-forget push tasks aren't GC'd
 
@@ -116,9 +119,16 @@ async def _do_notify(sess: dict, ev: dict):
     # per session would buzz. A unique tag makes every completion show its own banner.
     payload = {"title": title, "body": body, "sid": sid, "tag": f"{sid}:{kind}:{int(time.time())}"}
     skip = _watching_endpoints(sid)                  # devices currently looking → chime, don't buzz
-    _LOG.info("[notify] sid=%s kind=%s subs=%d watching=%d", sid, kind, len(subs), len(skip))
+    last = LAST_SENDER.get(sid)
+    if last == "":
+        # the device that sent the last message has notifications off → notify nobody this turn
+        _LOG.info("[notify] sid=%s kind=%s — last sender has notifications off, skipping", sid, kind)
+        return
+    only = {last} if last else None                  # None → fallback (all devices except foreground)
+    _LOG.info("[notify] sid=%s kind=%s subs=%d watching=%d target=%s",
+              sid, kind, len(subs), len(skip), "last-sender" if only else "all")
     try:
-        sent = await _to_thread(notify.send_to_user, slug, payload, skip)
+        sent = await _to_thread(notify.send_to_user, slug, payload, skip, only)
         _LOG.info("[notify] sid=%s kind=%s sent=%s", sid, kind, sent)
     except Exception as e:
         _LOG.warning("[notify] sid=%s send error: %s", sid, e)
@@ -721,6 +731,9 @@ async def ws(websocket: WebSocket, sid: str):
                 if msg.get("type") == "input":
                     text = (msg.get("text") or "").strip()
                     if text:
+                        # remember which device sent this so the done/blocked push targets only it
+                        # ('' = this device has notifications off → notify nobody for this turn)
+                        LAST_SENDER[sid] = msg.get("endpoint") or ""
                         cmd = text.split()[0] if text.startswith("/") else ""
                         # bring the container up if it was stopped, then send
                         if await _to_thread(mgr.status, s.sess) != "running":

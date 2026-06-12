@@ -2177,7 +2177,9 @@ function renderQueue(){
     it.append(rm); queueEl.appendChild(it);
   });
 }
-function _rawSend(text){ _turnDone=false; if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',text})); }
+// include this device's push endpoint so the server can target the "task done" push only at the
+// device you last messaged from (no buzzing your phone while you chat from the laptop)
+function _rawSend(text){ _turnDone=false; if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',text,endpoint:_pushEndpoint||''})); }
 function flushQueue(){
   if(_busy) return;
   const i=_sendQ.findIndex(q=>q.type==='fix');   // ideas are never auto-flushed

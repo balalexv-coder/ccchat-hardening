@@ -83,9 +83,10 @@ def _send_one(sub: dict, data: str) -> None:
             vapid_private_key=str(_PRIV), vapid_claims={"sub": _SUB})
 
 
-def send_to_user(slug: str, payload: dict, skip_endpoints=()) -> int:
-    """Push `payload` (dict → JSON) to every device registered for this user, except any whose
-    endpoint is in `skip_endpoints` (those devices are foreground-watching and chime in-tab instead).
+def send_to_user(slug: str, payload: dict, skip_endpoints=(), only_endpoints=None) -> int:
+    """Push `payload` (dict → JSON) to the user's registered devices. Skips any endpoint in
+    `skip_endpoints` (foreground-watching → they chime in-tab instead). If `only_endpoints` is not
+    None, sends ONLY to endpoints in it (to target just the device that sent the last message).
     Prunes subscriptions the push service reports as gone (404/410). Returns how many were sent."""
     _ensure()
     if webpush is None:
@@ -95,11 +96,15 @@ def send_to_user(slug: str, payload: dict, skip_endpoints=()) -> int:
     if not subs:
         return 0
     skip = set(skip_endpoints or ())
+    only = None if only_endpoints is None else set(only_endpoints)
     data = json.dumps(payload)
     sent = 0
     dead = []
     for sub in subs:
-        if sub.get("endpoint") in skip:
+        ep = sub.get("endpoint")
+        if ep in skip:
+            continue
+        if only is not None and ep not in only:
             continue
         try:
             _send_one(sub, data)
