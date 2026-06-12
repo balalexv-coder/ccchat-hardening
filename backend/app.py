@@ -1042,19 +1042,25 @@ async def term_ws(ws: WebSocket, sid: str):
         pass
 
 
-# Auto-reconnect shim injected into ttyd's page: wrap WebSocket so that when ttyd's socket closes
-# (terminal dropped — typically a backend redeploy), we poll until the server answers again and then
-# reload, which reconnects ttyd to the same tmux session. Avoids parking on "Press ⏎ to Reconnect".
+# Auto-reconnect shim injected into ttyd's page. ttyd's terminal socket drops two ways: a backend
+# redeploy, and — more often — the browser killing the socket when the tab/phone is backgrounded
+# ("come back later → Press ⏎ to Reconnect"). We wrap WebSocket to track the live ttyd socket and, on
+# its close OR whenever the page is brought back to the foreground with a dead socket, poll until the
+# server answers and reload — ttyd reconnects to the same tmux session, no overlay, no keypress.
 _TERM_RECONNECT_JS = (
-    "<script>(function(){var W=window.WebSocket,reloading=false;"
+    "<script>(function(){var W=window.WebSocket,reloading=false,cur=null;"
     "function waitAndReload(){if(reloading)return;reloading=true;var n=0;(function poll(){"
     "fetch(location.href,{method:'GET',cache:'no-store'}).then(function(r){"
     "if(r&&r.ok){location.reload();}else if(++n<150){setTimeout(poll,2000);}else{reloading=false;}})"
     ".catch(function(){if(++n<150){setTimeout(poll,2000);}else{reloading=false;}});})();}"
-    "function Wrapped(u,p){var s=(p!==undefined)?new W(u,p):new W(u);var fired=false;"
-    "s.addEventListener('close',function(){if(fired)return;fired=true;setTimeout(waitAndReload,800);});return s;}"
+    "function check(){if(!cur||cur.readyState===W.CLOSED||cur.readyState===W.CLOSING){waitAndReload();}}"
+    "function Wrapped(u,p){var s=(p!==undefined)?new W(u,p):new W(u);cur=s;"
+    "s.addEventListener('close',function(){setTimeout(check,600);});return s;}"
     "Wrapped.prototype=W.prototype;Wrapped.CONNECTING=W.CONNECTING;Wrapped.OPEN=W.OPEN;"
-    "Wrapped.CLOSING=W.CLOSING;Wrapped.CLOSED=W.CLOSED;window.WebSocket=Wrapped;})();</script>"
+    "Wrapped.CLOSING=W.CLOSING;Wrapped.CLOSED=W.CLOSED;window.WebSocket=Wrapped;"
+    "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')setTimeout(check,300);});"
+    "window.addEventListener('pageshow',function(){setTimeout(check,300);});"
+    "window.addEventListener('focus',function(){setTimeout(check,300);});})();</script>"
 )
 
 
