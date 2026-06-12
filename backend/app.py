@@ -1060,7 +1060,13 @@ async def term_ws(ws: WebSocket, sid: str):
 # its close OR whenever the page is brought back to the foreground with a dead socket, poll until the
 # server answers and reload — ttyd reconnects to the same tmux session, no overlay, no keypress.
 _TERM_RECONNECT_JS = (
-    "<script>(function(){var W=window.WebSocket,reloading=false,cur=null;"
+    "<script>(function(){"
+    # ttyd installs a beforeunload handler ("Reload site? changes may not be saved"). We run before
+    # ttyd's app.js, so drop any 'beforeunload' listener it tries to add (and block onbeforeunload).
+    "var _add=window.addEventListener;"
+    "window.addEventListener=function(t,f,o){if(t==='beforeunload')return;return _add.call(window,t,f,o);};"
+    "try{Object.defineProperty(window,'onbeforeunload',{configurable:true,get:function(){return null;},set:function(){}});}catch(e){}"
+    "var W=window.WebSocket,reloading=false,cur=null;"
     "function waitAndReload(){if(reloading)return;reloading=true;var n=0;(function poll(){"
     "fetch(location.href,{method:'GET',cache:'no-store'}).then(function(r){"
     "if(r&&r.ok){location.reload();}else if(++n<150){setTimeout(poll,2000);}else{reloading=false;}})"

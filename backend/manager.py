@@ -467,15 +467,13 @@ class Manager:
         theme = theme if theme in self._TTYD_THEME else "dark"
         up = "up" in (_docker("exec", c, "sh", "-c",
                               "pidof ttyd >/dev/null 2>&1 && echo up || echo down").stdout or "")
-        # marker = theme + a config version, so a ttyd started with an older flag set (e.g. before
-        # disableLeaveAlert) is relaunched once even when the theme is unchanged.
-        marker = f"{theme}|v2"
+        # remember which theme the running ttyd was started with (marker file)
         cur = (_docker("exec", c, "sh", "-c", "cat /tmp/.ttyd_theme 2>/dev/null").stdout or "").strip()
-        if up and cur == marker:
+        if up and cur == theme:
             return
-        if up:                                   # wrong theme/config — kill so we relaunch
+        if up:                                   # wrong theme — kill so we relaunch
             _docker("exec", c, "sh", "-c", "kill $(pidof ttyd) 2>/dev/null; sleep 0.3")
-        _docker("exec", c, "sh", "-c", f"echo {marker} > /tmp/.ttyd_theme")
+        _docker("exec", c, "sh", "-c", f"echo {theme} > /tmp/.ttyd_theme")
         # -W writable; bind on the web net but require per-session basic auth (review #6) so another
         # container on the shared network can't open an unauthenticated root shell. The proxy
         # (app.term_*) supplies the same credential derived from sid.
@@ -483,7 +481,6 @@ class Manager:
         _docker("exec", "-d", c, "ttyd", "-p", "7681", "-i", "0.0.0.0", "-W",
                 "-c", f"{user}:{pwd}",
                 "-t", f"theme={self._TTYD_THEME[theme]}",
-                "-t", "disableLeaveAlert=true",   # no "Reload site? changes may not be saved" prompt
                 "tmux", "attach", "-t", "main")
 
     @staticmethod
