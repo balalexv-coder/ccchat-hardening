@@ -6,6 +6,7 @@
 <title>Mermaid viewer</title>
 <link rel="icon" href="/icon.svg">
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script src="/lib/panzoom.min.js"></script>
 <style>
   :root{
     --bg:#f6f7f9; --panel:#fff; --ink:#1c1f23; --muted:#6b7280; --line:#e3e6ea;
@@ -137,6 +138,7 @@
       svgEl = canvas.querySelector('svg');
       applyPaper();
       measure();
+      ensurePz();
       fit();
     }).catch(function(e){ showErr(String(e && e.message || e)); });
   }
@@ -157,76 +159,29 @@
     svgEl.style.width = natW+'px'; svgEl.style.height = natH+'px';
   }
 
-  // ---- pan / zoom state ----
-  var scale=1, tx=0, ty=0;
-  var MIN=0.05, MAX=40;
-  function apply(){
-    canvas.style.transform = 'translate('+tx+'px,'+ty+'px) scale('+scale+')';
-    document.getElementById('zlvl').textContent = Math.round(scale*100)+'%';
+  // ---- pan / zoom via the panzoom library (anvaka/panzoom) — wheel/drag/pinch all handled by it ----
+  var pz = null;
+  var zlvl = document.getElementById('zlvl');
+  function ensurePz(){
+    if(pz || !window.panzoom) return;
+    pz = panzoom(canvas, {minZoom:0.05, maxZoom:40, smoothScroll:false, zoomDoubleClickSpeed:1, bounds:false});
+    pz.on('transform', function(){ if(pz) zlvl.textContent = Math.round(pz.getTransform().scale*100)+'%'; });
   }
-  function zoomAt(cx, cy, factor){
-    var ns = Math.min(MAX, Math.max(MIN, scale*factor));
-    if(ns===scale) return;
-    // keep the point under the cursor fixed
-    tx = cx - (cx - tx) * (ns/scale);
-    ty = cy - (cy - ty) * (ns/scale);
-    scale = ns; apply();
-  }
+  function stageCenter(){ var r=stage.getBoundingClientRect(); return {x:r.left+r.width/2, y:r.top+r.height/2}; }
+  function zoomCenter(factor){ if(!pz) return; var c=stageCenter(); pz.smoothZoom(c.x, c.y, factor); }
   function fit(){
-    if(!natW||!natH){ apply(); return; }
-    var r = stage.getBoundingClientRect();
-    var pad = 40;
-    var s = Math.min((r.width-pad)/natW, (r.height-pad)/natH);
-    s = Math.min(MAX, Math.max(MIN, s));
-    scale = s;
-    tx = (r.width  - natW*s)/2;
-    ty = (r.height - natH*s)/2;
-    apply();
+    if(!pz) return;
+    var r = stage.getBoundingClientRect(), pad = 40;
+    var s = (natW && natH) ? Math.min((r.width-pad)/natW, (r.height-pad)/natH) : 1;
+    s = Math.min(40, Math.max(0.05, s));
+    pz.zoomAbs(0, 0, s);
+    pz.moveTo((r.width - natW*s)/2, (r.height - natH*s)/2);
   }
   function resetZoom(){
+    if(!pz) return;
     var r = stage.getBoundingClientRect();
-    scale=1; tx=(r.width-natW)/2; ty=(r.height-natH)/2; if(tx<10)tx=20; if(ty<10)ty=20; apply();
-  }
-
-  // wheel zoom (ctrl/⌘ or plain wheel both zoom here, since the page is a viewer)
-  stage.addEventListener('wheel', function(e){
-    e.preventDefault();
-    var r = stage.getBoundingClientRect();
-    var factor = Math.exp(-e.deltaY * 0.0015);
-    zoomAt(e.clientX-r.left, e.clientY-r.top, factor);
-  }, {passive:false});
-
-  // pointer pan + pinch zoom (mouse + touch unified)
-  var pts = new Map(), panLast=null, pinchLast=null;
-  stage.addEventListener('pointerdown', function(e){
-    stage.setPointerCapture(e.pointerId);
-    pts.set(e.pointerId, {x:e.clientX, y:e.clientY});
-    if(pts.size===1){ panLast={x:e.clientX, y:e.clientY}; stage.classList.add('drag'); }
-    else if(pts.size===2){ pinchLast=pinchInfo(); panLast=null; }
-  });
-  stage.addEventListener('pointermove', function(e){
-    if(!pts.has(e.pointerId)) return;
-    pts.set(e.pointerId, {x:e.clientX, y:e.clientY});
-    if(pts.size===1 && panLast){
-      tx += e.clientX-panLast.x; ty += e.clientY-panLast.y;
-      panLast={x:e.clientX, y:e.clientY}; apply();
-    } else if(pts.size===2 && pinchLast){
-      var pi=pinchInfo(), r=stage.getBoundingClientRect();
-      if(pinchLast.dist>0) zoomAt(pi.cx-r.left, pi.cy-r.top, pi.dist/pinchLast.dist);
-      pinchLast=pi;
-    }
-  });
-  function endPtr(e){
-    pts.delete(e.pointerId);
-    if(pts.size<2) pinchLast=null;
-    if(pts.size===0){ panLast=null; stage.classList.remove('drag'); }
-    else if(pts.size===1){ var p=pts.values().next().value; panLast={x:p.x,y:p.y}; }
-  }
-  stage.addEventListener('pointerup', endPtr);
-  stage.addEventListener('pointercancel', endPtr);
-  function pinchInfo(){
-    var a=[...pts.values()]; var dx=a[0].x-a[1].x, dy=a[0].y-a[1].y;
-    return {dist:Math.hypot(dx,dy), cx:(a[0].x+a[1].x)/2, cy:(a[0].y+a[1].y)/2};
+    pz.zoomAbs(0, 0, 1);
+    pz.moveTo(Math.max(20,(r.width-natW)/2), Math.max(20,(r.height-natH)/2));
   }
 
   // ---- toolbar ----
@@ -239,9 +194,8 @@
       if(history.length > 1) history.back(); else location.href = '/';
     }, 150);
   };
-  function centerZoom(f){ var r=stage.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, f); }
-  document.getElementById('zin').onclick   = function(){ centerZoom(1.25); };
-  document.getElementById('zout').onclick  = function(){ centerZoom(1/1.25); };
+  document.getElementById('zin').onclick   = function(){ zoomCenter(1.25); };
+  document.getElementById('zout').onclick  = function(){ zoomCenter(1/1.25); };
   document.getElementById('fit').onclick   = fit;
   document.getElementById('reset').onclick = resetZoom;
   // Source toggle. Desktop: collapse the left pane. Mobile: switch between two full-screen
@@ -277,8 +231,8 @@
     if(e.key==='\\') document.getElementById('toggleSrc').click();
     else if(e.key==='0') fit();
     else if(e.key==='1') resetZoom();
-    else if(e.key==='+'||e.key==='=') centerZoom(1.25);
-    else if(e.key==='-') centerZoom(1/1.25);
+    else if(e.key==='+'||e.key==='=') zoomCenter(1.25);
+    else if(e.key==='-') zoomCenter(1/1.25);
   });
   addEventListener('resize', function(){ /* keep current transform; user can hit Fit */ });
 
