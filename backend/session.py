@@ -593,8 +593,12 @@ class Session:
                         idle_streak += 1
                         if idle_streak >= 4 and self._await_done:
                             self._await_done = False
+                            # soft=advisory: the authoritative turn end is the JSONL turn_duration
+                            # 'done'. This pane-based one only hides the pill (the client re-shows it
+                            # on any later activity), so a flaky "esc to interrupt" read can't end a
+                            # live turn. The push still fires from here (turn_duration doesn't notify).
                             for q in list(self._subscribers):
-                                q.put_nowait({"kind": "done"})
+                                q.put_nowait({"kind": "done", "soft": True})
                             self._fire_notify({"kind": "done"})   # "task finished" push
                     prev_busy = busy
                     # surface a blocking state (auth / rate-limit / workspace-trust) so the UI shows

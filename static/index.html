@@ -1514,7 +1514,7 @@ function busyWhat(t){ if(act.style.display!=='none'){actWhat.textContent=t} }
 // Like busyWhat but RE-SHOWS the indicator if it was hidden. The server's tmux busy-watchdog can
 // fire a false 'done' mid-turn (the "esc to interrupt" hint rotates out of the pane / truncates),
 // which hides the pill; any subsequent live activity should bring it back. Suppressed during replay.
-function busyShow(t){ if(_replaying) return; if(act.style.display==='none'){ busyStart(t,true); } else { actWhat.textContent=t; } }
+function busyShow(t){ if(_replaying||_turnDone) return; if(act.style.display==='none'){ busyStart(t,true); } else { actWhat.textContent=t; } }
 function busyStop(){ act.style.display='none'; clearInterval(actInt); actInt=null }
 
 // live task checklist streamed from TodoWrite — one panel, updated in place, pinned just above
@@ -1556,9 +1556,11 @@ function handle(ev){switch(ev.kind){
   case 'blocked':showBlocker(ev.reason);break;
   case 'context':{const c=$('ctxSize'); if(c) c.innerHTML='<span class="ic">⊟</span>'+Math.round(ev.tokens/1000)+'k';}break;
   case 'ready':status.textContent='online';_replaying=false;loadCommands();flushQueue();break;
-  case 'busy':_busy=true;if(!_replaying)busyStart(ev.what,ev.ongoing);break;
+  case 'busy':_busy=true;_turnDone=false;if(!_replaying)busyStart(ev.what,ev.ongoing);break;
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;
-  case 'done':_busy=false;busyStop();if(!_replaying){loadCommands();flushQueue();chime();}break;
+  // soft (pane-watchdog) done is advisory — just hide the pill; later activity may re-show it.
+  // A real done (JSONL turn_duration) is the turn end: mark it so busyShow won't resurrect the pill.
+  case 'done':busyStop();if(ev.soft){_busy=false;break;}_busy=false;_turnDone=true;if(!_replaying){loadCommands();flushQueue();chime();}break;
   case 'wiki':wikiChip(ev);break;
   case 'choice':
     if(ev.from_ask){ choiceButtons(ev); }              // ```ask: in-transcript; 'done' handles busy/chime
@@ -1585,6 +1587,10 @@ let _hbInt=null, _awaitingPong=false;
 // on every historical turn) or flushQueue() — which on a long transcript pegged the server and blocked
 // the main thread (→ missed heartbeats → reconnect → replay → storm again).
 let _replaying=false;
+// True after an authoritative turn-end (JSONL turn_duration 'done'); cleared when a new turn starts
+// (a send or a 'busy'). Gates busyShow so a late/stray activity event can't resurrect the pill after
+// the turn really ended (the pane watchdog's 'done' is soft and does NOT set this).
+let _turnDone=false;
 function stopHeartbeat(){ if(_hbInt){clearInterval(_hbInt);_hbInt=null;} _awaitingPong=false; }
 function startHeartbeat(){
   stopHeartbeat();
@@ -2171,7 +2177,7 @@ function renderQueue(){
     it.append(rm); queueEl.appendChild(it);
   });
 }
-function _rawSend(text){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',text})); }
+function _rawSend(text){ _turnDone=false; if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',text})); }
 function flushQueue(){
   if(_busy) return;
   const i=_sendQ.findIndex(q=>q.type==='fix');   // ideas are never auto-flushed
