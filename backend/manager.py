@@ -324,6 +324,17 @@ class Manager:
                     if "claudeAiOauth" in _d:
                         _d["claudeAiOauth"]["refreshToken"] = ""
                     dst.write_text(json.dumps(_d)); dst.chmod(0o600)
+        else:
+            # Path A (env setup-token): drop any stale seed-route cred file left over from a previous
+            # Path-B start of this same workspace, so an expired .credentials.json can't shadow the
+            # long-lived env token. This makes every (re)created session of a setup-token user a clean
+            # env-only session — the automatic migration for chats created before the token was saved.
+            stale = home_local / ".credentials.json"
+            if stale.exists():
+                try:
+                    stale.rename(stale.with_suffix(".json.bak"))
+                except Exception:
+                    pass
         # .claude.json (account binding) sits next to HOME; seed it as a FILE in the workspace
         cj_src = seed / ".claude.json"
         cj_local = self.local_ws(sess) / ".claude.json"
@@ -786,9 +797,6 @@ class Manager:
         Returns True if it (re)wrote the file."""
         try:
             slug = self._slug(sess)
-            # setup-token sessions authenticate via CLAUDE_CODE_OAUTH_TOKEN env — nothing to reseed.
-            if settings_store.get_oauth_token(slug):
-                return False
             # self-managed session keeps its own independent OAuth login — never reseed from the
             # shared seed (one token across many processes -> prone to rotation-race death).
             if (self.local_ws(sess) / ".chome" / ".self_managed").exists():
@@ -798,6 +806,14 @@ class Manager:
             if not seed_cred.exists():
                 return False
             dst = self.local_ws(sess) / ".chome" / ".credentials.json"
+            # A clean env-only (setup-token / Path A) session has no cred file and authenticates via
+            # CLAUDE_CODE_OAUTH_TOKEN — leave it to env, never plant a cred file there. But if a cred
+            # file already exists (a Path B session — including one created BEFORE the user saved a
+            # setup-token), keep topping it up so it can't go stale and demand /login. This is the fix
+            # for sessions that predate the token: previously we skipped reseed for any setup-token
+            # user, stranding their seed-route sessions once the ~8h access token expired.
+            if settings_store.get_oauth_token(slug) and not dst.exists():
+                return False
             if only_if_stale and dst.exists():
                 # still fresh -> leave it (session is topped up from the seed; its own copy has no
                 # refresh token so it cannot refresh)
