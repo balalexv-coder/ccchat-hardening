@@ -565,8 +565,7 @@ async def create_session(request: Request):
     if not settings_store.has_auth(_email_slug(email)):
         raise HTTPException(400, "Set your Claude credentials in Settings first")
     return await _to_thread(mgr.create, email, name, mounts,
-                            body.get("cpus", 0), body.get("mem_mb", 0),
-                            bool(body.get("restrict_egress", False)))
+                            body.get("cpus", 0), body.get("mem_mb", 0))
 
 
 @app.patch("/api/sessions/{sid}")
@@ -578,7 +577,7 @@ async def edit_session(sid: str, request: Request):
     OPS_IN_FLIGHT.add(sid)        # update() may recreate the container (mounts/limits change)
     try:
         s = await _to_thread(mgr.update, email, sid, name, mounts,
-                             body.get("cpus"), body.get("mem_mb"), body.get("restrict_egress"))
+                             body.get("cpus"), body.get("mem_mb"))
     finally:
         OPS_IN_FLIGHT.discard(sid)
     if not s:

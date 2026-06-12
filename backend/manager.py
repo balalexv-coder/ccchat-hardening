@@ -36,11 +36,6 @@ FRESH_MARGIN_MS = 30 * 60 * 1000
 # but cannot reach the host's internal services (Caddy, Grafana, prod apps) or other users' sessions
 # beyond ttyd (which is auth'd). ccchat itself must also be attached to this net to proxy ttyd.
 SESSION_NET = os.environ.get("SESSION_NET", "ccchat-net")
-# Sessions with "restrict egress" join an INTERNAL network (no direct internet) and reach the outside
-# only through the allowlist proxy via HTTPS_PROXY — so they can hit Anthropic/GitHub/PyPI/npm and
-# nothing else. ccchat is attached to this net too (for ttyd proxying).
-RESTRICTED_NET = os.environ.get("SESSION_RESTRICTED_NET", "ccchat-restricted")
-EGRESS_PROXY = os.environ.get("EGRESS_PROXY", "http://ccchat-egress:8888")
 
 # host paths for the bits a session container needs
 HOST_SSH = os.environ.get("HOST_SSH", "")
@@ -269,7 +264,7 @@ class Manager:
         except (TypeError, ValueError):
             return 0
 
-    def create(self, email: str, name: str, mounts: list, cpus=0, mem_mb=0, restrict_egress=False) -> dict:
+    def create(self, email: str, name: str, mounts: list, cpus=0, mem_mb=0) -> dict:
         d = _load()
         key = _email_slug(email)
         sid = uuid.uuid4().hex[:12]
@@ -283,7 +278,6 @@ class Manager:
             "container": cname, "host_ws": host_ws, "user": key,
             "mounts": self._allowed_mounts(email, mounts),
             "cpus": self._norm_cpus(cpus), "mem_mb": self._norm_mem(mem_mb),
-            "restrict_egress": bool(restrict_egress),
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         # create empty per-session context files (chat.md/wiki.md start empty — wiki.md is only
@@ -398,16 +392,12 @@ class Manager:
         mem = self._norm_mem(sess.get("mem_mb"))
         if mem > 0:
             limits += ["--memory", f"{mem}m"]
-        # network: restricted sessions go on the internal net and route egress through the allowlist
-        # proxy (HTTPS_PROXY); normal sessions go on the dedicated net with direct internet.
+        # session containers join the dedicated session net: internet egress, but isolated from the
+        # host's internal services and from other users' sessions.
         net = self._session_net(sess)
         env = ["-e", "IS_SANDBOX=1", "-e", "HOME=/root"]
         if oauth_token:
             env += ["-e", f"CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"]
-        if sess.get("restrict_egress"):
-            for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
-                env += ["-e", f"{k}={EGRESS_PROXY}"]
-            env += ["-e", "NO_PROXY=localhost,127.0.0.1", "-e", "no_proxy=localhost,127.0.0.1"]
         # long-lived container; we exec claude into it on demand.
         _docker("run", "-d", "--name", cname, "--restart", "unless-stopped",
                 "--network", net, *limits, *env, "-w", "/workspace",
@@ -477,13 +467,15 @@ class Manager:
         theme = theme if theme in self._TTYD_THEME else "dark"
         up = "up" in (_docker("exec", c, "sh", "-c",
                               "pidof ttyd >/dev/null 2>&1 && echo up || echo down").stdout or "")
-        # remember which theme the running ttyd was started with (marker file)
+        # marker = theme + a config version, so a ttyd started with an older flag set (e.g. before
+        # disableLeaveAlert) is relaunched once even when the theme is unchanged.
+        marker = f"{theme}|v2"
         cur = (_docker("exec", c, "sh", "-c", "cat /tmp/.ttyd_theme 2>/dev/null").stdout or "").strip()
-        if up and cur == theme:
+        if up and cur == marker:
             return
-        if up:                                   # wrong theme — kill so we relaunch
+        if up:                                   # wrong theme/config — kill so we relaunch
             _docker("exec", c, "sh", "-c", "kill $(pidof ttyd) 2>/dev/null; sleep 0.3")
-        _docker("exec", c, "sh", "-c", f"echo {theme} > /tmp/.ttyd_theme")
+        _docker("exec", c, "sh", "-c", f"echo {marker} > /tmp/.ttyd_theme")
         # -W writable; bind on the web net but require per-session basic auth (review #6) so another
         # container on the shared network can't open an unauthenticated root shell. The proxy
         # (app.term_*) supplies the same credential derived from sid.
@@ -491,11 +483,12 @@ class Manager:
         _docker("exec", "-d", c, "ttyd", "-p", "7681", "-i", "0.0.0.0", "-W",
                 "-c", f"{user}:{pwd}",
                 "-t", f"theme={self._TTYD_THEME[theme]}",
+                "-t", "disableLeaveAlert=true",   # no "Reload site? changes may not be saved" prompt
                 "tmux", "attach", "-t", "main")
 
     @staticmethod
     def _session_net(sess: dict) -> str:
-        return RESTRICTED_NET if sess.get("restrict_egress") else SESSION_NET
+        return SESSION_NET
 
     def web_ip(self, sess: dict) -> str:
         """The session container's IP on its session network (for ttyd proxying)."""
@@ -940,7 +933,7 @@ class Manager:
     def rename(self, email: str, sid: str, name: str):
         return self.update(email, sid, name=name)
 
-    def update(self, email: str, sid: str, name=None, mounts=None, cpus=None, mem_mb=None, restrict_egress=None):
+    def update(self, email: str, sid: str, name=None, mounts=None, cpus=None, mem_mb=None):
         """Edit a session's name, mounts and/or resource limits. Changing mounts or limits recreates
         the container (they're set at `docker run`); the workspace + transcript persist on the host,
         the claude process restarts. Returns the session, or None if not found/invalid."""
@@ -967,11 +960,6 @@ class Manager:
                 nm = self._norm_mem(mem_mb)
                 if nm != self._norm_mem(s.get("mem_mb")):
                     s["mem_mb"] = nm
-                    recreate = True
-            if restrict_egress is not None:
-                re_ = bool(restrict_egress)
-                if re_ != bool(s.get("restrict_egress")):
-                    s["restrict_egress"] = re_
                     recreate = True
             _save(d)
             if name is not None:

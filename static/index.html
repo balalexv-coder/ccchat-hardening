@@ -306,9 +306,6 @@
   #modal .limits .lim-row{display:flex;gap:12px;margin-top:6px}
   #modal .limits label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);flex:1}
   #modal .limits input{width:100%;background:var(--code-bg);border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px;font:inherit}
-  #modal .egress{margin-top:12px}
-  #modal .egress .eg-toggle{display:flex;align-items:center;gap:8px;color:var(--txt);cursor:pointer;font-size:14px}
-  #modal .egress .mlabel{margin-top:4px;font-size:12px}
   #modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
   #modal button{border-radius:6px;padding:8px 14px;font-size:14px;cursor:pointer;border:1px solid var(--line);background:var(--hover);color:var(--txt)}
   #modal button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}
@@ -594,11 +591,6 @@
         <label>RAM, MB <input type="number" id="mMem" min="0" step="256" value="0"></label>
       </div>
     </div>
-    <div class="egress">
-      <label class="eg-toggle"><input type="checkbox" id="mEgress">
-        <span>Restrict internet — only Anthropic, GitHub, PyPI, npm, Debian</span></label>
-      <div class="mlabel" style="opacity:.7">Off = full internet (still isolated from internal services). On routes egress through an allowlist proxy.</div>
-    </div>
     <div class="row">
       <button id="mCancel">Cancel</button>
       <button class="primary" id="mOk">Create</button>
@@ -815,7 +807,7 @@ function openSession(s){
   _sendQ=[]; renderQueue(); loadIdeas(s.id);   // drop prev session's queue; pull THIS session's parked ideas from the server
   showBlocker(null);         // clear any stale blocking banner; connect() re-emits if still blocked
   $('ctxSize').textContent='';   // reset context size; refilled from this session's turns
-  setTermMode(false);   // always start in pretty mode for a freshly opened session
+  setTermMode(localStorage.getItem('termOpen')==='1');   // restore this device's saved terminal open/closed state
   closeContext();       // never carry the context viewer across sessions
   connect(); loadCommands(); refreshStatus(s.id); updatePower();
   updateVerBtn(); refreshVersion(s.id);   // version badge for THIS session (cached map redraws instantly)
@@ -1292,7 +1284,6 @@ async function openSessionModal(sess){
   $('mName').value = sess?(sess.name||''):'';
   $('mCpus').value = sess?(sess.cpus||0):0;
   $('mMem').value = sess?(sess.mem_mb||0):0;
-  $('mEgress').checked = sess?!!sess.restrict_egress:false;
   const curMounts=new Map(((sess&&sess.mounts)||[]).map(m=>[m.name, m.read_only!==false]));
   $('mMounts').innerHTML = availMounts.length
     ? '<div class="mlabel">Mounts:</div>'+availMounts.map(m=>{
@@ -1314,7 +1305,6 @@ $('mOk').onclick=async()=>{
     .map(d=>({name:d.dataset.name, read_only:d.querySelector('.mp-ro').checked}));
   const cpus=Math.max(0, parseFloat($('mCpus').value)||0);
   const mem_mb=Math.max(0, parseInt($('mMem').value)||0);
-  const restrict_egress=$('mEgress').checked;
   const editing=_editSession;
   // recreating the container (mounts changed) takes a bit — keep the button spinning until it's ready
   const busyLabel = editing ? 'Recreating…' : 'Creating…';
@@ -1323,7 +1313,7 @@ $('mOk').onclick=async()=>{
   const method=editing?'PATCH':'POST';
   let r;
   try{
-    r=await fetch(url,{method,headers:{'content-type':'application/json'},body:JSON.stringify({name,mounts,cpus,mem_mb,restrict_egress})});
+    r=await fetch(url,{method,headers:{'content-type':'application/json'},body:JSON.stringify({name,mounts,cpus,mem_mb})});
   }catch(e){ $('mOk').disabled=false; $('mOk').textContent=editing?'Save':'Create'; alert('network error'); return; }
   $('mOk').disabled=false; $('mOk').textContent=editing?'Save':'Create';
   if(!r.ok){ const e=await r.json().catch(()=>({})); alert(e.detail||('error '+r.status)); return; }
@@ -1886,6 +1876,7 @@ function openTerm(){
 function setTermMode(on){
   document.body.classList.toggle('split-term',on);   // chat stays; terminal shows on the right
   termtog.classList.toggle('on',on);
+  try{ localStorage.setItem('termOpen', on?'1':'0'); }catch(e){}   // per-device: remember open/closed
   if(on && cur){
     openTerm();
   } else {
