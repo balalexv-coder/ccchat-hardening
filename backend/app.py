@@ -1066,18 +1066,21 @@ _TERM_RECONNECT_JS = (
     "var _add=window.addEventListener;"
     "window.addEventListener=function(t,f,o){if(t==='beforeunload')return;return _add.call(window,t,f,o);};"
     "try{Object.defineProperty(window,'onbeforeunload',{configurable:true,get:function(){return null;},set:function(){}});}catch(e){}"
-    "var W=window.WebSocket,reloading=false,cur=null;"
+    "var W=window.WebSocket,reloading=false,cur=null,everOpen=false;"
     "function waitAndReload(){if(reloading)return;reloading=true;var n=0;(function poll(){"
     "fetch(location.href,{method:'GET',cache:'no-store'}).then(function(r){"
     "if(r&&r.ok){location.reload();}else if(++n<150){setTimeout(poll,2000);}else{reloading=false;}})"
     ".catch(function(){if(++n<150){setTimeout(poll,2000);}else{reloading=false;}});})();}"
-    "function check(){if(!cur||cur.readyState===W.CLOSED||cur.readyState===W.CLOSING){waitAndReload();}}"
+    # only recover a socket that was alive and then dropped — NEVER reload during the initial connect
+    # (otherwise pageshow/focus fire before ttyd has opened its socket and we reload-loop on load).
+    "function check(){if(everOpen&&cur&&(cur.readyState===W.CLOSED||cur.readyState===W.CLOSING)){waitAndReload();}}"
     "function Wrapped(u,p){var s=(p!==undefined)?new W(u,p):new W(u);cur=s;"
+    "s.addEventListener('open',function(){everOpen=true;});"
     "s.addEventListener('close',function(){setTimeout(check,600);});return s;}"
     "Wrapped.prototype=W.prototype;Wrapped.CONNECTING=W.CONNECTING;Wrapped.OPEN=W.OPEN;"
     "Wrapped.CLOSING=W.CLOSING;Wrapped.CLOSED=W.CLOSED;window.WebSocket=Wrapped;"
     "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')setTimeout(check,300);});"
-    "window.addEventListener('pageshow',function(){setTimeout(check,300);});"
+    "window.addEventListener('pageshow',function(e){if(e&&e.persisted)setTimeout(check,300);});"
     "window.addEventListener('focus',function(){setTimeout(check,300);});})();</script>"
 )
 
