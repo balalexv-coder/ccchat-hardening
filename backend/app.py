@@ -1042,6 +1042,22 @@ async def term_ws(ws: WebSocket, sid: str):
         pass
 
 
+# Auto-reconnect shim injected into ttyd's page: wrap WebSocket so that when ttyd's socket closes
+# (terminal dropped — typically a backend redeploy), we poll until the server answers again and then
+# reload, which reconnects ttyd to the same tmux session. Avoids parking on "Press ⏎ to Reconnect".
+_TERM_RECONNECT_JS = (
+    "<script>(function(){var W=window.WebSocket,reloading=false;"
+    "function waitAndReload(){if(reloading)return;reloading=true;var n=0;(function poll(){"
+    "fetch(location.href,{method:'GET',cache:'no-store'}).then(function(r){"
+    "if(r&&r.ok){location.reload();}else if(++n<150){setTimeout(poll,2000);}else{reloading=false;}})"
+    ".catch(function(){if(++n<150){setTimeout(poll,2000);}else{reloading=false;}});})();}"
+    "function Wrapped(u,p){var s=(p!==undefined)?new W(u,p):new W(u);var fired=false;"
+    "s.addEventListener('close',function(){if(fired)return;fired=true;setTimeout(waitAndReload,800);});return s;}"
+    "Wrapped.prototype=W.prototype;Wrapped.CONNECTING=W.CONNECTING;Wrapped.OPEN=W.OPEN;"
+    "Wrapped.CLOSING=W.CLOSING;Wrapped.CLOSED=W.CLOSED;window.WebSocket=Wrapped;})();</script>"
+)
+
+
 @app.get("/term/{sid}")
 @app.get("/term/{sid}/")
 async def term_index(sid: str, request: Request):
@@ -1051,8 +1067,12 @@ async def term_index(sid: str, request: Request):
         raise HTTPException(404, "not found")
     async with httpx.AsyncClient(timeout=10) as cli:
         r = await cli.get(f"http://{ip}:{TTYD_PORT}/", auth=ttyd_credential(sid))
-    # ttyd's index uses relative asset + ws URLs — inject <base> so they resolve under our prefix
-    html = r.text.replace("<head>", f'<head><base href="/term/{sid}/">', 1)
+    # ttyd's index uses relative asset + ws URLs — inject <base> so they resolve under our prefix,
+    # plus an auto-reconnect shim so a dropped terminal (e.g. after a backend redeploy) silently
+    # comes back instead of parking on ttyd's "Press ⏎ to Reconnect" overlay (injected BEFORE
+    # ttyd's app.js so the WebSocket wrapper is in place when ttyd opens its socket).
+    head = f'<head><base href="/term/{sid}/">{_TERM_RECONNECT_JS}'
+    html = r.text.replace("<head>", head, 1)
     return Response(html, media_type="text/html")
 
 
