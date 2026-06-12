@@ -1356,12 +1356,16 @@ function mermaidCard(src){
 // turn /workspace/...image paths into markdown images served via our file endpoint, so they
 // render as inline previews (web URLs in markdown already work natively).
 const IMG_RE=/\/workspace\/[^\s)\]]+\.(?:png|jpe?g|gif|webp|svg|bmp)/gi;
+// a non-image /workspace file path ALONE on its own line → a download link (how the agent shares a
+// file). Inline path mentions in prose are left as plain text so they don't all become links.
+const FILE_RE=/^[ \t]*(\/workspace\/[^\s)\]]+\.[A-Za-z0-9]{1,8})[ \t]*$/gm;
 function fileURL(p){ return '/api/sessions/'+(cur?cur.id:'')+'/file?p='+encodeURIComponent(p); }
 function imgify(text){
-  // strip a bare "[attachment: <path>]" wrapper (keep the path), then turn /workspace image
-  // paths into markdown images served via our file endpoint
+  // strip a bare "[attachment: <path>]" wrapper (keep the path); turn /workspace image paths into
+  // inline markdown images, and a bare-on-its-own-line non-image file path into a download link.
   return text.replace(/\[attachment:\s*([^\]]+)\]/gi, '$1')
-             .replace(IMG_RE, function(m){ return '\n!['+m.split('/').pop()+']('+fileURL(m)+')\n'; });
+             .replace(IMG_RE, function(m){ return '\n!['+m.split('/').pop()+']('+fileURL(m)+')\n'; })
+             .replace(FILE_RE, function(_,p){ return '\n[⤓ '+p.split('/').pop()+']('+fileURL(p)+'&dl=1)\n'; });
 }
 const lightbox=document.getElementById('lightbox'), lightboxImg=lightbox.querySelector('img');
 lightbox.onclick=()=>{lightbox.style.display='none';lightboxImg.src='';};

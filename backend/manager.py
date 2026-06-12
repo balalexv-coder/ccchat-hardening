@@ -684,7 +684,14 @@ class Manager:
                   "Supported: png, jpg, gif, webp, svg, bmp. You cannot generate an image from a text "
                   "prompt, but you CAN create one with code — a matplotlib chart, a PIL drawing, or an "
                   ".svg you write directly — then reference its path. For images already on the public "
-                  "web, a normal Markdown image works: ![alt](https://...). Only reference files that exist.")
+                  "web, a normal Markdown image works: ![alt](https://...). Only reference files that exist.\n"
+                  "\n# Sharing a file for download\n"
+                  "To hand the user a NON-image file (a report, .csv, .pdf, .zip, a code file, etc.), write "
+                  "its BARE /workspace path on its OWN line — the UI renders it as a download link that "
+                  "downloads the file on click. Same convention as images: just the bare path on its own "
+                  "line, NOT wrapped in Markdown. The file must already exist in /workspace. (A /workspace "
+                  "path mentioned inline inside a sentence is left as plain text — put it on its own line "
+                  "to offer the download.)")
 
     # how diagrams render in this UI (part of the baked base prompt)
     MERMAID_HINT = ("# Diagrams (Mermaid)\n"

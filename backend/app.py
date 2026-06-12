@@ -894,9 +894,10 @@ async def upload_file(sid: str, request: Request, file: UploadFile = File(...)):
 
 
 @app.get("/api/sessions/{sid}/file")
-def get_file(sid: str, p: str, request: Request):
+def get_file(sid: str, p: str, request: Request, dl: int = 0):
     """Serve a file from the session's /workspace by path (for inline image previews etc).
-    `p` is the in-container path like /workspace/uploads/x.png. Confined to the workspace tree."""
+    `p` is the in-container path like /workspace/uploads/x.png. Confined to the workspace tree.
+    `dl=1` forces a download (Content-Disposition: attachment) instead of inline rendering."""
     sess = mgr._find(current_user(request), sid)
     if not sess:
         raise HTTPException(404, "not found")
@@ -905,7 +906,7 @@ def get_file(sid: str, p: str, request: Request):
     fp = (base / rel).resolve()
     if base not in fp.parents or not fp.is_file():     # block path traversal
         raise HTTPException(404, "not found")
-    return FileResponse(str(fp))
+    return FileResponse(str(fp), filename=fp.name) if dl else FileResponse(str(fp))
 
 
 @app.post("/api/sessions/{sid}/start")
