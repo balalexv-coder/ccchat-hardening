@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Mermaid viewer</title>
 <link rel="icon" href="/icon.svg">
-<script src="/lib/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
 <style>
   :root{
@@ -108,15 +107,10 @@
   var dtype = (firstLine.match(/^[A-Za-z][\w-]*/)||[''])[0];
   if(dtype){ document.getElementById('dtype').textContent = '· '+dtype; document.title = 'Mermaid · '+dtype; }
 
-  function sanitizeSvg(svg){
-    return window.DOMPurify ? DOMPurify.sanitize(svg,{USE_PROFILES:{svg:true,svgFilters:true,html:true}}) : '';
-  }
-
   var canvas = document.getElementById('canvas');
   var stage  = document.getElementById('stage');
-  // Default to the light theme: it renders dark text/edges that stay readable on the light "paper"
-  // below even if SVG sanitisation drops some of mermaid's embedded label styles. (A dark theme on a
-  // dark surface could leave labels invisible.)
+  // Default to the light theme: dark text/edges read well on the light "paper" below. (A dark theme
+  // on a dark surface can leave edge labels hard to see; the ◐ button switches to it on demand.)
   var curTheme = 'default';
   var svgEl = null, natW = 0, natH = 0;
 
@@ -132,14 +126,14 @@
 
   function renderDiagram(){
     if(!window.mermaid){ showErr('mermaid failed to load (check network).'); return; }
-    // htmlLabels:false → labels are rendered as plain SVG <text>, not <foreignObject> HTML. The
-    // foreignObject route gets stripped by our DOMPurify SVG sanitisation, which is why labels were
-    // vanishing. SVG text survives the sanitiser and is themeable.
-    mermaid.initialize({startOnLoad:false, theme:curTheme, securityLevel:'strict',
-                        htmlLabels:false, flowchart:{htmlLabels:false}, class:{htmlLabels:false}});
+    // Vanilla mermaid: default rendering, no post-processing. securityLevel:'strict' is mermaid's own
+    // default — it encodes HTML in labels and disables click/script handlers, so we inject the SVG it
+    // produces as-is (no extra sanitiser to strip labels). The source is the user's own diagram and
+    // the page is auth-gated.
+    mermaid.initialize({startOnLoad:false, theme:curTheme, securityLevel:'strict'});
     var id = 'mmv'+Date.now();
     mermaid.render(id, source).then(function(r){
-      canvas.innerHTML = sanitizeSvg(r.svg);
+      canvas.innerHTML = r.svg;
       svgEl = canvas.querySelector('svg');
       applyPaper();
       measure();
