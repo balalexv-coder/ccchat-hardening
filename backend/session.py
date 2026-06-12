@@ -575,8 +575,10 @@ class Session:
             while self._alive:
                 # tmux watchdog: keep the "thinking" indicator in sync with claude's REAL state
                 # across all clients. On busy → indicator on. Once a turn was sent (_await_done) and
-                # claude is genuinely idle for ~2 polls → indicator off. This also closes commands
-                # that never enter a busy state nor write turn_duration (e.g. /clear, /context).
+                # claude is genuinely idle for ~4 polls (~8s) → indicator off. The longer streak avoids
+                # a false 'done' when the "esc to interrupt" hint momentarily rotates out of / truncates
+                # in the pane mid-turn. This also closes commands that never write turn_duration
+                # (e.g. /clear, /context); the real turn end still arrives immediately via turn_duration.
                 tick += 1
                 if tick % 5 == 0:  # ~every 2s
                     pane = await asyncio.get_event_loop().run_in_executor(None, self._pane)
@@ -589,7 +591,7 @@ class Session:
                                 q.put_nowait({"kind": "busy"})
                     else:
                         idle_streak += 1
-                        if idle_streak >= 2 and self._await_done:
+                        if idle_streak >= 4 and self._await_done:
                             self._await_done = False
                             for q in list(self._subscribers):
                                 q.put_nowait({"kind": "done"})
