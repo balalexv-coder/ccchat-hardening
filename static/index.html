@@ -813,7 +813,7 @@ function openSession(s){
   loadInputHist(s.id);   // this session's sent-message history for ↑/↓ recall
   showBlocker(null);         // clear any stale blocking banner; connect() re-emits if still blocked
   $('ctxSize').textContent='';   // reset context size; refilled from this session's turns
-  setModelBadge('');             // reset model badge; refilled from this session's turns
+  _ctxPeak=0; _lastModel=''; setModelBadge('');   // reset model badge + window inference for this session
   setTermMode(localStorage.getItem('termOpen')==='1');   // restore this device's saved terminal open/closed state
   closeContext();       // never carry the context viewer across sessions
   connect(); loadCommands(); refreshStatus(s.id); updatePower();
@@ -1553,19 +1553,22 @@ function showBlocker(reason){
   if(!reason){ b.style.display='none'; b.textContent=''; return; }
   b.textContent=BLOCK_MSG[reason]||('⚠ '+reason); b.style.display='block';
 }
-// header model badge: short name (e.g. "Opus 4.8") + tooltip with the full id, max context window
-// and reasoning mode. The model id comes from the transcript's assistant turns (can change via /model).
+// header model badge: short name (e.g. "Opus 4.8") + tooltip with the full id, context window and
+// reasoning mode. Model id comes from the transcript's assistant turns (can change via /model). The
+// window is INFERRED from real usage, not hardcoded: a context that ever exceeded 200K proves the 1M
+// long-context beta is active (a 200K model can't exceed 200K); otherwise we only know it's ≥200K.
+let _ctxPeak=0, _lastModel='';
 function modelInfo(id){
   id=String(id||'');
   var fam=(id.match(/opus|sonnet|haiku|fable/i)||[''])[0].toLowerCase();
   var Fam={opus:'Opus',sonnet:'Sonnet',haiku:'Haiku',fable:'Fable'}[fam]||'';
   var ver='';
   if(fam){ var vm=id.match(new RegExp(fam+'[-_]?(\\d+)(?:[-_](\\d+))?','i')); if(vm) ver=vm[2]?vm[1]+'.'+vm[2]:vm[1]; }
-  // 1M long-context window (the beta is enabled on this account — Opus/Sonnet run at 1M here, as the
-  // context indicator shows >200K); Haiku and others are 200K. Explicit [1m] tag also forces 1M.
-  var oneM=/\[1m\]|\b1m\b|opus|sonnet/i.test(id);
+  var proven1M = _ctxPeak>200000;
+  var win = proven1M ? '1M' : '≥200K';
   var short=(Fam||id||'?')+(ver?(' '+ver):'');
-  var tip=(id||'unknown')+'\nMax context: '+(oneM?'1M':'200K')+' tokens\nReasoning: auto (managed by Claude CLI)';
+  var tip=(id||'unknown')+'\nContext window: '+win+' tokens'+(proven1M?' (1M long-context active)':' (≤200K seen so far)')
+         +'\nReasoning: auto (managed by Claude CLI)';
   return {short:short, tip:tip};
 }
 function setModelBadge(id){
@@ -1577,7 +1580,10 @@ function handle(ev){switch(ev.kind){
   case 'blocked':showBlocker(ev.reason);break;
   case 'context':{
     const c=$('ctxSize'); if(c && ev.tokens!=null) c.innerHTML='<span class="ic">⊟</span>'+Math.round(ev.tokens/1000)+'k';
-    if(ev.model) setModelBadge(ev.model);
+    if(ev.tokens!=null) _ctxPeak=Math.max(_ctxPeak, ev.tokens);
+    if(ev.peak) _ctxPeak=Math.max(_ctxPeak, ev.peak);
+    if(ev.model) _lastModel=ev.model;
+    if(_lastModel) setModelBadge(_lastModel);   // re-render so the window flips to 1M once context passes 200K
   }break;
   case 'ready':status.textContent='online';_replaying=false;loadCommands();flushQueue();break;
   case 'busy':_busy=true;_turnDone=false;if(!_replaying)busyStart(ev.what,ev.ongoing);break;

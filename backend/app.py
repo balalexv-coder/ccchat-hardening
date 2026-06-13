@@ -682,13 +682,15 @@ async def ws(websocket: WebSocket, sid: str):
         return
     for ev in s.history():
         await websocket.send_json(ev)
-    _ctx, _model = s.last_context_tokens()   # persist the context-size + model indicators across reconnects
+    _ctx, _model, _peak = s.last_context_tokens()   # persist context-size + model + peak across reconnects
     if _ctx or _model:
         cev = {"kind": "context"}
         if _ctx:
             cev["tokens"] = _ctx
         if _model:
             cev["model"] = _model
+        if _peak:
+            cev["peak"] = _peak
         await websocket.send_json(cev)
     await websocket.send_json({"kind": "ready"})
 

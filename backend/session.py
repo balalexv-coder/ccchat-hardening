@@ -770,13 +770,16 @@ class Session:
         return evs
 
     def last_context_tokens(self):
-        """Latest assistant turn's context size + model id from the transcript, so the UI context-size
-        and model indicators persist across reconnects / tab switches. Returns (tokens, model)."""
+        """Latest assistant turn's context size + model id, plus the PEAK context seen, from the
+        transcript. Persists the UI context-size/model indicators across reconnects, and the peak lets
+        the UI infer the window: a context above 200K proves the 1M long-context beta is active (a
+        200K model can't exceed 200K). Returns (tokens, model, peak)."""
         path = self._current_jsonl()
         if not path:
-            return None, None
+            return None, None, 0
         ctx = None
         model = None
+        peak = 0
         try:
             with open(path, "rb") as f:
                 for raw in f:
@@ -792,8 +795,10 @@ class Session:
                             c = self._ctx_tokens(um["usage"])
                             if c:
                                 ctx = c
+                                if c > peak:
+                                    peak = c
                         if um.get("model"):
                             model = um["model"]
         except OSError:
             pass
-        return ctx, model
+        return ctx, model, peak
