@@ -1560,7 +1560,9 @@ function modelInfo(id){
   var Fam={opus:'Opus',sonnet:'Sonnet',haiku:'Haiku',fable:'Fable'}[fam]||'';
   var ver='';
   if(fam){ var vm=id.match(new RegExp(fam+'[-_]?(\\d+)(?:[-_](\\d+))?','i')); if(vm) ver=vm[2]?vm[1]+'.'+vm[2]:vm[1]; }
-  var oneM=/\[1m\]|\b1m\b/i.test(id);
+  // 1M long-context window (the beta is enabled on this account — Opus/Sonnet run at 1M here, as the
+  // context indicator shows >200K); Haiku and others are 200K. Explicit [1m] tag also forces 1M.
+  var oneM=/\[1m\]|\b1m\b|opus|sonnet/i.test(id);
   var short=(Fam||id||'?')+(ver?(' '+ver):'');
   var tip=(id||'unknown')+'\nMax context: '+(oneM?'1M':'200K')+' tokens\nReasoning: auto (managed by Claude CLI)';
   return {short:short, tip:tip};
