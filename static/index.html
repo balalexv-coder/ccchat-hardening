@@ -107,6 +107,10 @@
   #ctxSize .ic{font-size:11px;opacity:.8}
   #ctxSize:hover{border-color:var(--accent);color:var(--txt)}
   #ctxSize:empty{display:none}
+  #modelBadge{display:inline-flex;align-items:center;font-size:12px;color:var(--muted);flex:none;
+    background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:3px 9px;cursor:default;
+    font-family:inherit;white-space:nowrap}
+  #modelBadge:empty{display:none!important}
   #termtog{background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;font-size:14px;padding:2px 8px;cursor:pointer}
   #vscodeBtn{background:none;border:1px solid var(--line);border-radius:6px;padding:3px 7px;cursor:pointer;display:inline-flex;align-items:center}
   #vscodeBtn:hover{border-color:var(--accent)}
@@ -506,6 +510,7 @@
       <button id="burger">☰</button>
       <span id="title">ccchat</span>
       <button id="ctxSize" title="Context size — click to /compact"></button>
+      <button id="modelBadge" style="display:none"></button>
       <button id="power" style="display:none">●</button>
       <span id="powerMsg"></span>
       <button id="vscodeBtn" title="Open in VS Code (in browser, inside the session)"><svg viewBox="0 0 256 254" width="16" height="16" aria-hidden="true"><path fill="#0065A9" d="M181.534 254.252a16.01 16.01 0 0 0 12.754-.49l52.97-25.477A16 16 0 0 0 256 213.84V40.16a16 16 0 0 0-8.742-14.246L194.288.438a16.01 16.01 0 0 0-18.267 3.105L74.196 96.553 29.768 62.834a10.68 10.68 0 0 0-13.643.606L1.94 76.357c-2.586 2.353-2.583 6.43.006 8.78L40.5 120.43 1.946 155.72c-2.59 2.35-2.592 6.427-.006 8.78l14.185 12.917a10.68 10.68 0 0 0 13.643.606l44.428-33.72 101.825 93.011a16 16 0 0 0 5.513 3.938zm10.305-184.83L114.566 128l77.273 58.578z"/></svg></button>
@@ -807,6 +812,7 @@ function openSession(s){
   _sendQ=[]; renderQueue(); loadIdeas(s.id);   // drop prev session's queue; pull THIS session's parked ideas from the server
   showBlocker(null);         // clear any stale blocking banner; connect() re-emits if still blocked
   $('ctxSize').textContent='';   // reset context size; refilled from this session's turns
+  setModelBadge('');             // reset model badge; refilled from this session's turns
   setTermMode(localStorage.getItem('termOpen')==='1');   // restore this device's saved terminal open/closed state
   closeContext();       // never carry the context viewer across sessions
   connect(); loadCommands(); refreshStatus(s.id); updatePower();
@@ -1546,9 +1552,30 @@ function showBlocker(reason){
   if(!reason){ b.style.display='none'; b.textContent=''; return; }
   b.textContent=BLOCK_MSG[reason]||('⚠ '+reason); b.style.display='block';
 }
+// header model badge: short name (e.g. "Opus 4.8") + tooltip with the full id, max context window
+// and reasoning mode. The model id comes from the transcript's assistant turns (can change via /model).
+function modelInfo(id){
+  id=String(id||'');
+  var fam=(id.match(/opus|sonnet|haiku|fable/i)||[''])[0].toLowerCase();
+  var Fam={opus:'Opus',sonnet:'Sonnet',haiku:'Haiku',fable:'Fable'}[fam]||'';
+  var ver='';
+  if(fam){ var vm=id.match(new RegExp(fam+'[-_]?(\\d+)(?:[-_](\\d+))?','i')); if(vm) ver=vm[2]?vm[1]+'.'+vm[2]:vm[1]; }
+  var oneM=/\[1m\]|\b1m\b/i.test(id);
+  var short=(Fam||id||'?')+(ver?(' '+ver):'');
+  var tip=(id||'unknown')+'\nMax context: '+(oneM?'1M':'200K')+' tokens\nReasoning: auto (managed by Claude CLI)';
+  return {short:short, tip:tip};
+}
+function setModelBadge(id){
+  const mb=$('modelBadge'); if(!mb) return;
+  if(!id){ mb.textContent=''; mb.style.display='none'; return; }
+  const mi=modelInfo(id); mb.textContent=mi.short; mb.title=mi.tip; mb.style.display='inline-flex';
+}
 function handle(ev){switch(ev.kind){
   case 'blocked':showBlocker(ev.reason);break;
-  case 'context':{const c=$('ctxSize'); if(c) c.innerHTML='<span class="ic">⊟</span>'+Math.round(ev.tokens/1000)+'k';}break;
+  case 'context':{
+    const c=$('ctxSize'); if(c && ev.tokens!=null) c.innerHTML='<span class="ic">⊟</span>'+Math.round(ev.tokens/1000)+'k';
+    if(ev.model) setModelBadge(ev.model);
+  }break;
   case 'ready':status.textContent='online';_replaying=false;loadCommands();flushQueue();break;
   case 'busy':_busy=true;_turnDone=false;if(!_replaying)busyStart(ev.what,ev.ongoing);break;
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;

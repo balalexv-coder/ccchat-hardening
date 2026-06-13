@@ -668,8 +668,11 @@ class Session:
                                 if um.get("role") == "assistant" and um.get("usage"):
                                     ctx = self._ctx_tokens(um["usage"])
                                     if ctx:
+                                        cev = {"kind": "context", "tokens": ctx}
+                                        if um.get("model"):
+                                            cev["model"] = um["model"]
                                         for q in list(self._subscribers):
-                                            q.put_nowait({"kind": "context", "tokens": ctx})
+                                            q.put_nowait(cev)
                                 ev = self._parse_line(d)
                                 if ev:
                                     for _e in (ev if isinstance(ev, list) else [ev]):
@@ -767,12 +770,13 @@ class Session:
         return evs
 
     def last_context_tokens(self):
-        """Latest assistant turn's context size (input + cache read + cache create) from the
-        transcript, so the UI context indicator persists across reconnects / tab switches."""
+        """Latest assistant turn's context size + model id from the transcript, so the UI context-size
+        and model indicators persist across reconnects / tab switches. Returns (tokens, model)."""
         path = self._current_jsonl()
         if not path:
-            return None
+            return None, None
         ctx = None
+        model = None
         try:
             with open(path, "rb") as f:
                 for raw in f:
@@ -783,10 +787,13 @@ class Session:
                     except json.JSONDecodeError:
                         continue
                     um = d.get("message") or {}
-                    if um.get("role") == "assistant" and um.get("usage"):
-                        c = self._ctx_tokens(um["usage"])
-                        if c:
-                            ctx = c
+                    if um.get("role") == "assistant":
+                        if um.get("usage"):
+                            c = self._ctx_tokens(um["usage"])
+                            if c:
+                                ctx = c
+                        if um.get("model"):
+                            model = um["model"]
         except OSError:
             pass
-        return ctx
+        return ctx, model

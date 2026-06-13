@@ -682,9 +682,14 @@ async def ws(websocket: WebSocket, sid: str):
         return
     for ev in s.history():
         await websocket.send_json(ev)
-    _ctx = s.last_context_tokens()   # persist the context-size indicator across reconnects/tab switches
-    if _ctx:
-        await websocket.send_json({"kind": "context", "tokens": _ctx})
+    _ctx, _model = s.last_context_tokens()   # persist the context-size + model indicators across reconnects
+    if _ctx or _model:
+        cev = {"kind": "context"}
+        if _ctx:
+            cev["tokens"] = _ctx
+        if _model:
+            cev["model"] = _model
+        await websocket.send_json(cev)
     await websocket.send_json({"kind": "ready"})
 
     # reflect the CURRENT state on (re)connect: if claude is busy right now (e.g. you switched away
