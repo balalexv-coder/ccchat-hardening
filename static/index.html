@@ -810,6 +810,7 @@ function openSession(s){
   if(todoEl){todoEl.remove();todoEl=null;}   // drop the previous session's checklist
   busyStop(); _busy=false;   // reset indicator; connect() re-shows it if this session is busy
   _sendQ=[]; renderQueue(); loadIdeas(s.id);   // drop prev session's queue; pull THIS session's parked ideas from the server
+  loadInputHist(s.id);   // this session's sent-message history for ↑/↓ recall
   showBlocker(null);         // clear any stale blocking banner; connect() re-emits if still blocked
   $('ctxSize').textContent='';   // reset context size; refilled from this session's turns
   setModelBadge('');             // reset model badge; refilled from this session's turns
@@ -1716,6 +1717,7 @@ function submit(){
   const ready=attached.filter(a=>a.path);
   if((!t && !ready.length)||!ws||ws.readyState!==1)return;
   if(attached.some(a=>a.uploading))return;  // wait for uploads to finish
+  if(t) pushHist(t);                         // remember what you typed for ↑/↓ recall
   let text=t;
   if(ready.length){
     const lines=ready.map(a=>'[attachment: '+a.path+']').join('\n');
@@ -1814,6 +1816,36 @@ function showCmds(){
 function hideCmds(){cmdsEl.style.display='none'}
 function pickCmd(i){ inp.value=cmdFiltered[i]+' '; hideCmds(); inp.focus(); }
 
+// ---------- sent-message history (↑/↓ in the composer, like a shell) — per session, this device
+let _inputHist=[], _histIdx=null, _histDraft='';
+function loadInputHist(sid){
+  try{ _inputHist=JSON.parse(localStorage.getItem('inpHist:'+sid)||'[]'); }catch(e){ _inputHist=[]; }
+  if(!Array.isArray(_inputHist)) _inputHist=[];
+  _histIdx=null; _histDraft='';
+}
+function pushHist(t){
+  t=String(t||''); if(!t) return;
+  if(_inputHist[_inputHist.length-1]!==t) _inputHist.push(t);     // skip consecutive duplicates
+  if(_inputHist.length>200) _inputHist=_inputHist.slice(-200);
+  _histIdx=null; _histDraft='';
+  try{ if(cur) localStorage.setItem('inpHist:'+cur.id, JSON.stringify(_inputHist)); }catch(e){}
+}
+function histResize(){ inp.style.height='auto'; inp.style.height=Math.min(inp.scrollHeight,120)+'px';
+  const n=inp.value.length; try{ inp.setSelectionRange(n,n); }catch(e){} hideCmds(); }
+function histFirstLine(){ return inp.value.slice(0, inp.selectionStart).indexOf('\n')===-1; }  // caret on line 1
+function histLastLine(){ return inp.value.slice(inp.selectionEnd).indexOf('\n')===-1; }         // caret on last line
+function histPrev(){   // ↑ : older
+  if(!_inputHist.length) return;
+  if(_histIdx===null){ _histDraft=inp.value; _histIdx=_inputHist.length; }
+  if(_histIdx>0){ _histIdx--; inp.value=_inputHist[_histIdx]; histResize(); }
+}
+function histNext(){   // ↓ : newer (past the newest restores your draft)
+  if(_histIdx===null) return;
+  _histIdx++;
+  if(_histIdx>=_inputHist.length){ _histIdx=null; inp.value=_histDraft; }
+  else inp.value=_inputHist[_histIdx];
+  histResize();
+}
 inp.addEventListener('keydown',e=>{
   const open=cmdsEl.style.display==='block';
   if(open){
@@ -1830,9 +1862,13 @@ inp.addEventListener('keydown',e=>{
     }
     if(e.key==='Escape'){hideCmds();return}
   }
+  // shell-like history: ↑ recalls older sent messages, ↓ goes newer. Only when the command popup is
+  // closed, and (for multi-line drafts) only from the first/last line so cursor movement still works.
+  if(e.key==='ArrowUp' && _inputHist.length && histFirstLine()){ e.preventDefault(); histPrev(); return; }
+  if(e.key==='ArrowDown' && _histIdx!==null && histLastLine()){ e.preventDefault(); histNext(); return; }
   if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submit()}
 });
-inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px';cmdSel=0;showCmds()});
+inp.addEventListener('input',()=>{_histIdx=null;inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px';cmdSel=0;showCmds()});
 inp.addEventListener('blur',()=>setTimeout(hideCmds,150));
 
 // ---------- mobile drawer
