@@ -329,6 +329,21 @@ class Manager:
                     stale.rename(stale.with_suffix(".json.bak"))
                 except Exception:
                     pass
+        # Default reasoning effort: seed `effortLevel` into the session's claude settings.json so every
+        # session (and every restart) runs at high reasoning out of the box. setdefault — never clobber
+        # an effort the user picked via /effort or /model. "xhigh" is the max value persistable in
+        # settings.json (the enum tops out there; "max" is live-session only). Key + enum verified
+        # against claude-code 2.1.x. claude merges its own keys (model, theme, …) around this on launch.
+        sj = home_local / "settings.json"
+        try:
+            sj_data = json.loads(sj.read_text(encoding="utf-8")) if sj.exists() else {}
+        except Exception:
+            sj_data = {}
+        if not isinstance(sj_data, dict):
+            sj_data = {}
+        if sj_data.get("effortLevel") is None:
+            sj_data["effortLevel"] = "xhigh"
+            sj.write_text(json.dumps(sj_data, ensure_ascii=False, indent=2), encoding="utf-8")
         # .claude.json (account binding) sits next to HOME; seed it as a FILE in the workspace
         cj_src = seed / ".claude.json"
         cj_local = self.local_ws(sess) / ".claude.json"
