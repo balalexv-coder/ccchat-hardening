@@ -19,6 +19,21 @@ def _docker(*args, timeout=30):
     return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
 
 
+# Auto-"wiki load" message. Instead of pasting the (possibly huge) wiki.md into the prompt — which
+# breaks for files over ~128 KB because tmux send-keys passes the whole text as a single execve
+# argument (MAX_ARG_STRLEN), failing silently with E2BIG — we send a short instruction telling
+# claude to READ the mounted file itself. Reading is plain file I/O (no argv limit), so a wiki of
+# any size loads. This exact string is matched in _parse_line to hide the load turn from the chat
+# (shown as a "wiki loaded" chip). Keep manager.ensure_claude in sync — it types this same constant
+# on container (re)start. One logical line (no newlines) so the send/normalise/match all agree.
+WIKI_LOAD_CMD = (
+    "Прочитай ПОЛНОСТЬЮ файл /workspace/.context/wiki.md — это мой durable wiki/scratchpad. "
+    "Файл может быть большим: читай постранично (offset) до самого конца, не останавливайся на "
+    "первых строках. Когда весь файл окажется в контексте, ответь одной короткой строкой-"
+    "подтверждением, без пересказа содержимого."
+)
+
+
 class Session:
     def __init__(self, sess: dict, local_ws: Path, wiki: str = ""):
         self.sess = sess
@@ -37,8 +52,10 @@ class Session:
                                    # browser/phone is closed). Called as on_notify(self.sess, ev).
         self._bg_tasks = set()     # strong refs to fire-and-forget tasks so they aren't GC'd
         self._wiki_sent = False
-        # wiki: auto-sent on start, must NOT appear in chat — shown as a "wiki loaded (N tokens)" chip
-        self._wiki_norm = (wiki or "").replace("\n", " ").strip()
+        # wiki: when the session has a non-empty wiki.md we auto-send the READ instruction (not the
+        # content) on start; it must NOT appear in chat — shown as a "wiki loaded" chip. _wiki_norm
+        # is the normalised instruction so _parse_line recognises and hides that turn.
+        self._wiki_norm = WIKI_LOAD_CMD.replace("\n", " ").strip() if (wiki or "").strip() else ""
         self._hide_next_assistant = False   # the assistant turn answering the wiki is hidden too
         self._wiki_tokens_sent = False      # emit the token-count chip only once per wiki load
         self._seen_choices = set()          # ask_user_choice ids already surfaced to the UI
@@ -115,16 +132,15 @@ class Session:
         self._await_done = True   # expect this turn to finish → watchdog closes the indicator
 
     async def send_wiki(self, text: str):
-        """Send the wiki as a normal user message (messages-zone, so it's prompt-cached and
-        survives compaction). Used on session start and re-sent after each compact/clear.
-        Keep _wiki_norm in sync with the CURRENT wiki text so _parse_line recognises it and hides
-        it from the chat (shows the 'wiki loaded' chip instead) — the file may have changed since
-        the session started."""
+        """Re-load the wiki after a compaction/clear by telling claude to READ the mounted wiki.md
+        (see WIKI_LOAD_CMD) rather than pasting its content — so wikis larger than ~128 KB load too.
+        `text` is the current wiki content; we only use it to decide whether a wiki exists. The read
+        turn is hidden from the chat (shown as a 'wiki loaded' chip) via _wiki_norm matching."""
         if text and text.strip():
-            self._wiki_norm = text.replace("\n", " ").strip()
+            self._wiki_norm = WIKI_LOAD_CMD.replace("\n", " ").strip()
             self._hide_next_assistant = False
             self._wiki_tokens_sent = False
-            await self.send_text(text)
+            await self.send_text(WIKI_LOAD_CMD)
 
     async def run_tui_command(self, cmd: str) -> str:
         """Run a slash-command that draws a full-screen TUI overlay (e.g. /help, /cost, /status)
@@ -307,6 +323,10 @@ class Session:
                     return {"kind": "wiki", "loaded": True}
                 return {"kind": "user", "text": s}
             if isinstance(cont, list):
+                # while the wiki is loading, claude is reading wiki.md — hide those tool_results
+                # (the file content) so the load turn stays out of the chat, like its other parts
+                if self._hide_next_assistant:
+                    return None
                 for c in cont:
                     if isinstance(c, dict) and c.get("type") == "tool_result":
                         # results of hidden tools (ToolSearch / ask_user_choice) are noise:

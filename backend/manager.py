@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 
 from . import mounts_store, settings_store, userauth
+from .session import WIKI_LOAD_CMD
 
 STATE_FILE = Path(os.environ.get("CCCHAT_STATE", "/state/sessions.json"))
 # Host-side root for per-session workspaces. IMPORTANT: this is a HOST path (the docker daemon
@@ -940,12 +941,15 @@ class Manager:
             if "esc to interrupt" in txt.lower() or 'Try "' in txt or "shortcuts" in txt:
                 break
             time.sleep(0.8)
-        # auto-send wiki as the very first message (messages zone => prompt-cached, survives compact).
-        # Not shown in the chat; the UI just renders a "wiki loaded" chip.
+        # auto-load the wiki as the very first message. We don't paste wiki.md's content (it fails
+        # silently for files >~128 KB — a single tmux send-keys argument hits MAX_ARG_STRLEN/E2BIG);
+        # instead we send a short instruction telling claude to READ the mounted file itself (plain
+        # file I/O, no argv limit → any size loads). Not shown in chat; UI renders a "wiki loaded"
+        # chip. WIKI_LOAD_CMD is shared with session.send_wiki so the hide-matching stays in sync.
         wiki = self.wiki_text(sess)
-        if wiki:
+        if wiki and wiki.strip():
             time.sleep(1.0)
-            _docker("exec", c, "tmux", "send-keys", "-t", "main", "-l", wiki.replace("\n", " "))
+            _docker("exec", c, "tmux", "send-keys", "-t", "main", "-l", WIKI_LOAD_CMD.replace("\n", " "))
             time.sleep(0.2)
             _docker("exec", c, "tmux", "send-keys", "-t", "main", "Enter")
 
