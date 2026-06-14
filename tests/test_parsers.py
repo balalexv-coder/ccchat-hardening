@@ -5,7 +5,7 @@ _clean_overlay, _parse_choice (+ _choice_from_pane dedup), and _parse_line.
 """
 from pathlib import Path
 
-from session import Session
+from session import Session, WIKI_LOAD_CMD
 
 
 def make_session(wiki: str = "") -> Session:
@@ -116,14 +116,28 @@ def test_parse_line_compact_summary_is_wiki_chip():
 
 def test_parse_line_hides_wiki_and_its_answer():
     s = make_session(wiki="my wiki text")
-    user = {"type": "user", "message": {"role": "user", "content": "my wiki text"}}
+    # the auto-sent message is now the READ instruction (WIKI_LOAD_CMD), not the wiki content —
+    # that's what gets hidden and shown as a chip.
+    user = {"type": "user", "message": {"role": "user", "content": WIKI_LOAD_CMD}}
     assert s._parse_line(user) == {"kind": "wiki", "loaded": True}
     assert s._hide_next_assistant is True
+    # while loading, claude reads wiki.md; its tool_result (file content) is hidden too
+    tool_result = {"type": "user", "message": {"role": "user",
+                   "content": [{"type": "tool_result", "content": "verbatim wiki bytes"}]}}
+    assert s._parse_line(tool_result) is None
     # the assistant turn answering the wiki is hidden, but emits the token chip once
     asst = {"type": "assistant", "message": {"role": "assistant", "usage": {"input_tokens": 10},
                                              "content": [{"type": "text", "text": "ack"}]}}
     ev = s._parse_line(asst)
     assert ev["kind"] == "wiki" and ev["tokens"] == 10
+
+
+def test_parse_line_wiki_content_no_longer_special():
+    # a plain user message that merely equals the wiki content is NOT hidden anymore (we match the
+    # read instruction, not the content) — it shows as a normal user bubble.
+    s = make_session(wiki="my wiki text")
+    user = {"type": "user", "message": {"role": "user", "content": "my wiki text"}}
+    assert s._parse_line(user) == {"kind": "user", "text": "my wiki text"}
 
 
 def test_parse_ask_block_to_choice():
