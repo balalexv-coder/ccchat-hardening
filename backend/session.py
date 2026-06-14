@@ -45,8 +45,6 @@ class Session:
         self._answered_choices = set()      # ids answered (via web) but whose widget still lingers in
                                             # the pane — suppress re-emit until it clears (no stale dup)
         self._await_done = False            # a turn was sent; watchdog should emit done when idle
-        self._stopping = False              # user hit Stop; suppress the watchdog re-showing "busy"
-                                            # while claude winds down, until it's genuinely idle
         self._hidden_tool_ids = set()       # tool_use ids whose tool_result must be hidden too
         self._tasks_mtime = 0               # newest mtime in the tasks/ snapshot dir we've emitted
                                             # (ToolSearch + ask_user_choice: rendered as buttons / noise)
@@ -96,13 +94,6 @@ class Session:
             await loop.run_in_executor(None, lambda: _docker(
                 "exec", self.container, "tmux", "send-keys", "-t", "main", "Escape"))
             await asyncio.sleep(0.4)
-        # Clear any leftover text in the composer before typing. After the user hits Stop, Claude
-        # leaves the interrupted prompt sitting in the input box; without this, the next message is
-        # typed onto the end of it and submitted glued together ("prev msg""new msg"). C-u kills the
-        # input line; it's a harmless no-op when the composer is already empty (the normal case).
-        await loop.run_in_executor(None, lambda: _docker(
-            "exec", self.container, "tmux", "send-keys", "-t", "main", "C-u"))
-        await asyncio.sleep(0.1)
         clean = text.replace("\n", " ")
         await loop.run_in_executor(None, lambda: _docker(
             "exec", self.container, "tmux", "send-keys", "-t", "main", "-l", clean))
@@ -122,7 +113,6 @@ class Session:
         await loop.run_in_executor(None, lambda: _docker(
             "exec", self.container, "tmux", "send-keys", "-t", "main", "Enter"))
         self._await_done = True   # expect this turn to finish → watchdog closes the indicator
-        self._stopping = False    # a fresh turn supersedes any pending stop
 
     async def send_wiki(self, text: str):
         """Send the wiki as a normal user message (messages-zone, so it's prompt-cached and
@@ -188,10 +178,6 @@ class Session:
 
     async def interrupt(self):
         """Stop claude's current work: Escape interrupts the running turn in the TUI."""
-        # claude keeps showing "esc to interrupt" for a moment while it winds down; flag the stop so
-        # the pump's tmux watchdog doesn't re-emit a spurious 'busy' (which flickers "Thinking…" back
-        # on) during that window. Cleared when claude actually goes idle, or when a new turn is sent.
-        self._stopping = True
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: _docker(
             "exec", self.container, "tmux", "send-keys", "-t", "main", "Escape"))
@@ -600,16 +586,13 @@ class Session:
                     if busy:
                         idle_streak = 0
                         self._await_done = True
-                        # don't re-show "busy" while claude is winding down from a user Stop — that
-                        # spurious flicker is exactly the "second Thinking after cancel" bug.
-                        if not prev_busy and not self._stopping:
+                        if not prev_busy:
                             for q in list(self._subscribers):
                                 q.put_nowait({"kind": "busy"})
                     else:
                         idle_streak += 1
                         if idle_streak >= 4 and self._await_done:
                             self._await_done = False
-                            self._stopping = False   # claude is genuinely idle now; stop completed
                             # soft=advisory: the authoritative turn end is the JSONL turn_duration
                             # 'done'. This pane-based one only hides the pill (the client re-shows it
                             # on any later activity), so a flaky "esc to interrupt" read can't end a
