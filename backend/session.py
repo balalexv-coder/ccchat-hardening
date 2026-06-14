@@ -94,6 +94,13 @@ class Session:
             await loop.run_in_executor(None, lambda: _docker(
                 "exec", self.container, "tmux", "send-keys", "-t", "main", "Escape"))
             await asyncio.sleep(0.4)
+        # Clear any leftover text in the composer before typing. After the user hits Stop, Claude
+        # leaves the interrupted prompt sitting in the input box; without this, the next message is
+        # typed onto the end of it and submitted glued together ("prev msg""new msg"). C-u kills the
+        # input line; it's a harmless no-op when the composer is already empty (the normal case).
+        await loop.run_in_executor(None, lambda: _docker(
+            "exec", self.container, "tmux", "send-keys", "-t", "main", "C-u"))
+        await asyncio.sleep(0.1)
         clean = text.replace("\n", " ")
         await loop.run_in_executor(None, lambda: _docker(
             "exec", self.container, "tmux", "send-keys", "-t", "main", "-l", clean))
