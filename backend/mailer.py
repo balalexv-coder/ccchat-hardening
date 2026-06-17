@@ -28,7 +28,10 @@ def send(to: str, subject: str, html: str) -> tuple:
     payload = json.dumps({"from": FROM, "to": [to], "subject": subject, "html": html}).encode()
     req = urllib.request.Request(
         ENDPOINT, data=payload, method="POST",
-        headers={"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json"},
+        # A real User-Agent is required: Resend is behind Cloudflare, which blocks the default
+        # "Python-urllib/x" signature with HTTP 403 "error code: 1010".
+        headers={"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json",
+                 "User-Agent": "ccchat/1.0 (+https://chat.balalexv.tech)"},
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
