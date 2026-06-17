@@ -1407,12 +1407,30 @@ function quoteBlock(ref){
   const meta={role:ref.role||'', ts:ref.ts||'', partial:!!ref.partial, text:(ref.text||'').slice(0,4000)};
   return '```reply\n'+JSON.stringify(meta)+'\n```\n';
 }
-// parse a leading ```reply {json} ``` block -> {meta, body}, or null
+// parse a leading ```reply {json} ``` block -> {meta, body}, or null.
+// NOTE: ccchat's typed-prompt pipeline collapses real newlines to spaces, so the block arrives back
+// as "```reply {json} ``` body" on a single line. We therefore can't rely on newlines or on the
+// closing fence (the quoted text may itself contain ```): instead, locate the marker and extract the
+// JSON object by a string-aware brace scan, then strip an optional trailing fence before the body.
 function parseReplyBlock(text){
-  const m=/^```reply\s*\n([\s\S]*?)\n```\n?/.exec(text||'');
-  if(!m) return null;
-  try{ return {meta: JSON.parse(m[1]), body: text.slice(m[0].length)}; }
-  catch(e){ return null; }
+  text=text||'';
+  const mk=/^\s*```reply\b/.exec(text);
+  if(!mk) return null;
+  let i=text.indexOf('{', mk[0].length);
+  if(i<0) return null;
+  let depth=0, inStr=false, esc=false, end=-1;
+  for(let j=i;j<text.length;j++){
+    const c=text[j];
+    if(inStr){ if(esc) esc=false; else if(c==='\\') esc=true; else if(c==='"') inStr=false; }
+    else if(c==='"') inStr=true;
+    else if(c==='{') depth++;
+    else if(c==='}'){ if(--depth===0){ end=j; break; } }
+  }
+  if(end<0) return null;
+  let meta;
+  try{ meta=JSON.parse(text.slice(i,end+1)); }catch(e){ return null; }
+  let body=text.slice(end+1).replace(/^\s*```/,'').replace(/^\s+/,'');  // drop closing fence + gap
+  return {meta, body};
 }
 // the clickable "in reply to" card shown atop a message
 function replyCard(meta){
