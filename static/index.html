@@ -474,6 +474,27 @@
     body.split-term #termGutter{display:none}
     body.split-term #termframe{width:100%;max-width:100%;min-width:0}
   }
+  /* message footer: timestamp + reply action */
+  .msg .msgmeta{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:4px;
+                font-size:11px;line-height:1;color:var(--muted)}
+  .msg .msgact{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;
+               padding:0 2px;transition:opacity .12s,color .12s}
+  .msg:hover .msgact{opacity:.7}
+  .msg .msgact:hover{opacity:1;color:var(--accent)}
+  .msg .msgtime{opacity:.65;font-variant-numeric:tabular-nums}
+  /* reply/quote banner above the composer */
+  #replyBar{display:flex;align-items:center;gap:8px;padding:6px 10px;margin:0 10px;
+            border-left:3px solid var(--accent);background:var(--chip);border-radius:6px;font-size:12px}
+  #replyBar .rbtxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #replyBar .rblabel{color:var(--accent);font-weight:600}
+  #replyBar .rbprev{color:var(--muted)}
+  #replyBar .rbx{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px}
+  #replyBar .rbx:hover{color:var(--danger)}
+  /* floating "quote" button on text selection */
+  #quoteMenu{position:absolute;z-index:80}
+  #quoteMenu button{background:var(--accent);color:var(--on-accent);border:none;border-radius:7px;
+                    padding:6px 11px;font:inherit;font-size:13px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+  #quoteMenu button:hover{filter:brightness(1.1)}
 </style>
 </head>
 <body>
@@ -543,6 +564,7 @@
       <div id="queue"></div>
       <div id="cmds"></div>
       <div id="attachments"></div>
+      <div id="replyBar" style="display:none"></div>
       <div id="composer">
         <button id="micBtn" title="Voice input">🎤</button>
         <button id="attachBtn" title="Attach file">📎</button>
@@ -1338,15 +1360,56 @@ let renderedChoices=new Set();  // choice ids already drawn — the backend scra
                                 // widget, so guard against rendering the same one twice (stale dup)
 function place(el){const anchor=(pendingChoice&&pendingChoice.parentNode&&el!==pendingChoice)?pendingChoice:document.getElementById('activity');log.insertBefore(el,anchor)}
 function bubble(cls,text){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;place(d);scroll();return d}
-function userBubble(text){
+
+// ----- message meta (timestamp + reply) and reply/quote state -----
+function fmtTime(ts){
+  if(!ts) return '';
+  const d=new Date(ts); if(isNaN(d.getTime())) return '';
+  const now=new Date();
+  const hm=d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+  if(d.toDateString()===now.toDateString()) return hm;                    // today -> time only
+  return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' '+hm;  // else date + time
+}
+// add the footer (time + ↩ reply button) and remember the message text/role for replying/quoting
+function decorate(el, role, text, ts){
+  el._msgText=text; el._msgRole=role;
+  const meta=document.createElement('div'); meta.className='msgmeta';
+  const rb=document.createElement('button'); rb.type='button'; rb.className='msgact'; rb.textContent='↩'; rb.title='Ответить';
+  rb.onclick=ev=>{ ev.stopPropagation(); setReply({text:el._msgText, role:el._msgRole, partial:false}); };
+  const tm=document.createElement('span'); tm.className='msgtime'; tm.textContent=fmtTime(ts);
+  meta.append(rb,tm); el.appendChild(meta);
+  return el;
+}
+// build the "что отвечаю / что пишу" prefix that gets sent into the chat
+function quoteBlock(ref){
+  const who = ref.partial ? ('цитата ('+(ref.role==='user'?'я':'ассистент')+')')
+                          : (ref.role==='user' ? 'в ответ на моё сообщение' : 'в ответ ассистенту');
+  const src=(ref.text||'').slice(0,4000);
+  const q=src.split('\n').map(l=>'> '+l).join('\n');
+  return '↩ '+who+':\n'+q+'\n\n';
+}
+let replyRef=null;
+function setReply(ref){ replyRef=ref; renderReplyBar(); try{inp.focus();}catch(e){} }
+function clearReply(){ replyRef=null; renderReplyBar(); }
+function renderReplyBar(){
+  const bar=document.getElementById('replyBar'); if(!bar) return;
+  if(!replyRef){ bar.style.display='none'; bar.innerHTML=''; return; }
+  const lbl = replyRef.partial ? '❝ Цитирую' : '↩ Отвечаю';
+  bar.style.display='flex';
+  bar.innerHTML='<div class="rbtxt"><span class="rblabel"></span> <span class="rbprev"></span></div><button class="rbx" type="button" title="Отменить">✕</button>';
+  bar.querySelector('.rblabel').textContent=lbl;
+  bar.querySelector('.rbprev').textContent=(replyRef.text||'').replace(/\s+/g,' ').slice(0,140);
+  bar.querySelector('.rbx').onclick=clearReply;
+}
+function userBubble(text, ts){
   // if the message references an image path, render markdown (so it shows as a preview);
   // otherwise keep it as a plain text bubble.
   if(window.marked && IMG_RE.test(text)){
     IMG_RE.lastIndex=0;
     const d=document.createElement('div'); d.className='msg user md';
-    d.innerHTML=mdSafe(imgify(text)); place(d); scroll(); return d;
+    d.innerHTML=mdSafe(imgify(text)); place(d); scroll(); return decorate(d,'user',text,ts);
   }
-  return bubble('user',text);
+  return decorate(bubble('user',text),'user',text,ts);
 }
 // Render a ```mermaid block as a link card opening the standalone viewer (/mermaid.html) in a new
 // tab. The diagram source travels in the URL hash, so it is never sent to the server.
@@ -1381,7 +1444,7 @@ document.addEventListener('click',e=>{
     lightboxImg.src=e.target.src; lightbox.style.display='flex';
   }
 });
-function assistantBubble(text){
+function assistantBubble(text, ts){
   const d=document.createElement('div'); d.className='msg assistant md';
   if(window.marked){
     const parts=[];let last=0,re=/```mermaid[ \t]*\r?\n([\s\S]*?)```/g,m;
@@ -1392,7 +1455,7 @@ function assistantBubble(text){
       if(p.mer!==undefined&&p.mer){d.appendChild(mermaidCard(p.mer))}
     }
   }else{d.textContent=text;d.classList.remove('md')}
-  place(d);scroll();return d;
+  place(d);scroll();return decorate(d,'assistant',text,ts);
 }
 function thinking(t){const d=document.createElement('details');d.className='msg thinking';
   const s=document.createElement('summary');s.textContent='💭 thinking';const p=document.createElement('div');p.textContent=t;
@@ -1607,8 +1670,8 @@ function handle(ev){switch(ev.kind){
     if(ev.from_ask){ choiceButtons(ev); }              // ```ask: in-transcript; 'done' handles busy/chime
     else { busyStop(); choiceButtons(ev); if(!_replaying) chime(); }   // live tmux widget — awaiting your click
     break;
-  case 'user':userBubble(ev.text);break;
-  case 'assistant':busyShow('Thinking…');assistantBubble(ev.text);break;
+  case 'user':userBubble(ev.text, ev.ts);break;
+  case 'assistant':busyShow('Thinking…');assistantBubble(ev.text, ev.ts);break;
   case 'thinking':busyShow('Reasoning…');thinking(ev.text);break;
   case 'todos':renderTodos(ev.items);break;
   case 'tool_use':busyShow((toolVerb[ev.name]||ev.name||'Working')+'…');tool(ev.name,ev.text);break;
@@ -1732,7 +1795,7 @@ cw.addEventListener('drop',e=>{e.preventDefault();cw.classList.remove('drag'); i
 function submit(){
   const t=inp.value.trim();
   const ready=attached.filter(a=>a.path);
-  if((!t && !ready.length)||!ws||ws.readyState!==1)return;
+  if((!t && !ready.length && !replyRef)||!ws||ws.readyState!==1)return;
   if(attached.some(a=>a.uploading))return;  // wait for uploads to finish
   if(t) pushHist(t);                         // remember what you typed for ↑/↓ recall
   let text=t;
@@ -1740,6 +1803,7 @@ function submit(){
     const lines=ready.map(a=>'[attachment: '+a.path+']').join('\n');
     text = lines + (t? '\n'+t : '');
   }
+  if(replyRef){ text = quoteBlock(replyRef) + text; clearReply(); }   // prepend "на что отвечаю"
   if(_busy){
     // claude is mid-turn — don't just queue blindly; ask whether this is a quick "tweak"
     // (auto-sends at the next opening, current behaviour) or an "idea" to revisit later (parked).
@@ -1754,6 +1818,34 @@ function submit(){
   flushQueue();   // sends now (we're free)
 }
 send.onclick=submit;
+
+// ----- "Цитировать": floating button shown after selecting text inside a message -----
+(function(){
+  const menu=document.createElement('div'); menu.id='quoteMenu'; menu.style.display='none';
+  const btn=document.createElement('button'); btn.type='button'; btn.textContent='❝ Цитировать';
+  menu.appendChild(btn); document.body.appendChild(menu);
+  let sel=null;
+  function hide(){ menu.style.display='none'; sel=null; }
+  document.addEventListener('mouseup', e=>{
+    if(menu.contains(e.target)) return;
+    setTimeout(()=>{                          // let the selection settle after mouseup
+      const s=window.getSelection(); const txt=s && s.toString().trim();
+      if(!txt){ hide(); return; }
+      let n=s.anchorNode; let el=n&&(n.nodeType===1?n:n.parentElement);
+      const msg=el&&el.closest&&el.closest('.msg.user, .msg.assistant');
+      if(!msg){ hide(); return; }
+      sel={text:txt, role: msg.classList.contains('user')?'user':'assistant'};
+      const r=s.getRangeAt(0).getBoundingClientRect();
+      menu.style.display='block';
+      menu.style.left=Math.max(8, window.scrollX+r.left)+'px';
+      menu.style.top=(window.scrollY+r.bottom+6)+'px';
+    },10);
+  });
+  btn.onclick=()=>{ if(sel) setReply({text:sel.text, role:sel.role, partial:true});
+                    const g=window.getSelection(); if(g) g.removeAllRanges(); hide(); };
+  document.addEventListener('mousedown', e=>{ if(!menu.contains(e.target)) hide(); });
+  document.addEventListener('scroll', hide, true);
+})();
 
 // ----- "tweak / idea" type picker (shown when you write while claude is busy) -----
 let _pendQ=null;   // the composed payload awaiting a type choice

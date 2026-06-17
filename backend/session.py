@@ -516,6 +516,17 @@ class Session:
                 "multi": has_checkbox, "allow_custom": allow_custom,
                 "group_idx": group_done, "group_total": group_total}
 
+    @staticmethod
+    def _with_ts(ev, d):
+        """Stamp the transcript timestamp onto user/assistant events so the UI can show date/time
+        per message (and so it's correct on history replay, not just live). No-op for other kinds."""
+        ts = d.get("timestamp")
+        if ts and ev:
+            for e in (ev if isinstance(ev, list) else [ev]):
+                if isinstance(e, dict) and e.get("kind") in ("user", "assistant"):
+                    e.setdefault("ts", ts)
+        return ev
+
     def _choice_from_pane(self, pane: str):
         """pump's view: parse + dedup so each distinct group is streamed to subscribers only once."""
         ev = self._parse_choice(pane)
@@ -693,7 +704,7 @@ class Session:
                                             cev["model"] = um["model"]
                                         for q in list(self._subscribers):
                                             q.put_nowait(cev)
-                                ev = self._parse_line(d)
+                                ev = self._with_ts(self._parse_line(d), d)
                                 if ev:
                                     for _e in (ev if isinstance(ev, list) else [ev]):
                                         for q in list(self._subscribers):
@@ -773,7 +784,7 @@ class Session:
                             d = json.loads(raw.decode("utf-8", "ignore"))
                         except json.JSONDecodeError:
                             continue
-                        ev = self._parse_line(d)
+                        ev = self._with_ts(self._parse_line(d), d)
                         if ev:
                             evs.extend(ev if isinstance(ev, list) else [ev])
                     self._jsonl_pos = f.tell()
