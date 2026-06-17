@@ -501,13 +501,22 @@
   <div id="authGate"><div class="box">
     <h2 id="authTitle">Sign in</h2>
     <p class="sub" id="authSub">to ccchat</p>
-    <label for="authUser">Username</label>
+    <label for="authUser" id="lblUser">Username</label>
     <input id="authUser" autocomplete="username" autocapitalize="off" spellcheck="false">
-    <label for="authPass">Password</label>
-    <input id="authPass" type="password" autocomplete="current-password">
+    <div id="passRow">
+      <label for="authPass" id="lblPass">Password</label>
+      <input id="authPass" type="password" autocomplete="current-password">
+    </div>
+    <div id="authEmailRow" style="display:none">
+      <label for="authEmail">Email</label>
+      <input id="authEmail" type="email" autocomplete="email" autocapitalize="off" spellcheck="false">
+      <label for="authEmail2" style="display:block;margin-top:10px">Повтори email</label>
+      <input id="authEmail2" type="email" autocapitalize="off" spellcheck="false">
+    </div>
     <button class="primary" id="authBtn">Sign in</button>
     <div class="status" id="authStatus"></div>
     <div class="toggle" id="authToggle">No account? <a id="authSwitch">Register</a></div>
+    <div class="toggle" id="authForgotRow"><a id="authForgot">Забыли пароль?</a></div>
   </div></div>
 
   <div id="pendingGate"><div class="box">
@@ -2188,21 +2197,45 @@ if(vscodeBtn) vscodeBtn.onclick=openVscodeWeb;
 
 
 // ---------- auth gate (username/password; CF Access is the outer gate) ----------
-let _authMode='login', _appStarted=false, _me=null;
+let _authMode='login', _appStarted=false, _me=null;   // mode: login | register | forgot
 function renderAuthMode(){
-  const reg=_authMode==='register';
-  $('authTitle').textContent=reg?'Create account':'Sign in';
-  $('authBtn').textContent=reg?'Register':'Sign in';
-  $('authPass').autocomplete=reg?'new-password':'current-password';
-  $('authToggle').innerHTML=reg?'Have an account? <a id="authSwitch">Sign in</a>':'No account? <a id="authSwitch">Register</a>';
-  $('authSwitch').onclick=()=>{ _authMode=reg?'login':'register'; $('authStatus').textContent=''; renderAuthMode(); };
+  const m=_authMode;
+  $('authTitle').textContent = m==='register'?'Create account':(m==='forgot'?'Сброс пароля':'Sign in');
+  $('authBtn').textContent   = m==='register'?'Register':(m==='forgot'?'Отправить ссылку':'Sign in');
+  $('passRow').style.display      = m==='forgot' ? 'none' : '';
+  $('authEmailRow').style.display = m==='register' ? '' : 'none';
+  $('authForgotRow').style.display= m==='login' ? '' : 'none';
+  $('lblUser').textContent = m==='forgot' ? 'Email или логин' : 'Username';
+  $('authPass').autocomplete = m==='register'?'new-password':'current-password';
+  $('authToggle').innerHTML = m==='register' ? 'Have an account? <a id="authSwitch">Sign in</a>'
+                            : m==='forgot'   ? '<a id="authSwitch">← Назад ко входу</a>'
+                            :                  'No account? <a id="authSwitch">Register</a>';
+  $('authSwitch').onclick=()=>{ _authMode = (m==='login')?'register':'login'; $('authStatus').textContent=''; renderAuthMode(); };
+  $('authForgot').onclick=()=>{ _authMode='forgot'; $('authStatus').textContent=''; renderAuthMode(); };
 }
 async function doAuth(){
+  const m=_authMode;
+  if(m==='forgot'){
+    const ident=$('authUser').value.trim();
+    if(!ident){ $('authStatus').textContent='введите email или логин'; return; }
+    $('authBtn').disabled=true; $('authStatus').textContent='…';
+    try{ await fetch('/api/auth/forgot',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({identifier:ident})});
+         $('authStatus').textContent='Если аккаунт существует, на его email отправлена ссылка для сброса.'; }
+    catch(e){ $('authStatus').textContent='сетевая ошибка'; }
+    $('authBtn').disabled=false; return;
+  }
   const username=$('authUser').value.trim(), password=$('authPass').value;
   if(!username||!password){ $('authStatus').textContent='enter username and password'; return; }
+  const payload={username,password};
+  if(m==='register'){
+    const em=$('authEmail').value.trim().toLowerCase(), em2=$('authEmail2').value.trim().toLowerCase();
+    if(!em){ $('authStatus').textContent='введите email'; return; }
+    if(em!==em2){ $('authStatus').textContent='email не совпадает'; return; }
+    payload.email=em;
+  }
   $('authBtn').disabled=true; $('authStatus').textContent='…';
   try{
-    const r=await fetch('/api/auth/'+_authMode,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username,password})});
+    const r=await fetch('/api/auth/'+m,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
     if(!r.ok){ const e=await r.json().catch(()=>({})); $('authStatus').textContent=e.detail||('error '+r.status); }
     else{ _me=await r.json(); $('authGate').classList.remove('open'); startApp(); }
   }catch(e){ $('authStatus').textContent='network error'; }

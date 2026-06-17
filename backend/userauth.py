@@ -27,6 +27,7 @@ COOKIE_NAME = "ccchat_auth"
 TOKEN_TTL = int(os.environ.get("CCCHAT_AUTH_TTL_DAYS", "30")) * 86400
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{2,32}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 DEFAULT_ADMIN = "admin"
 
 
@@ -143,20 +144,129 @@ class AuthError(ValueError):
     pass
 
 
-def register(username: str, password: str) -> str:
+def register(username: str, password: str, email: str = "") -> str:
     key = _canon(username)
     if not USERNAME_RE.match(key):
         raise AuthError("username must be 2–32 chars: letters, digits, _ or -")
     if not password or len(password) < 8:
         raise AuthError("password must be at least 8 characters")
+    email = (email or "").strip().lower()
+    if email and not EMAIL_RE.match(email):   # required-ness is enforced by the public endpoint;
+        raise AuthError("enter a valid email")  # direct/seed callers may omit it
     d = _load()
     if key in d:
         raise AuthError("username already taken")
     salt = os.urandom(16)
     d[key] = {"salt": salt.hex(), "hash": _hash(password, salt), "created": int(time.time()),
-              "approved": False}
+              "approved": False, "email": email, "email_verified": False}
     _save(d)
     return key
+
+
+# ---- email + password-recovery helpers ----
+def get_email(username: str) -> str:
+    return (_load().get(_canon(username)) or {}).get("email", "")
+
+
+def find_by_email(email: str):
+    """Username owning this email (first match), or None. Case-insensitive."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    for k, u in _load().items():
+        if (u.get("email") or "").lower() == email:
+            return k
+    return None
+
+
+def set_email_verified(username: str) -> None:
+    d = _load()
+    u = d.get(_canon(username))
+    if not u:
+        raise AuthError("no such user")
+    u["email_verified"] = True
+    _save(d)
+
+
+def set_password_reset(username: str, new_password: str) -> None:
+    """Set a new password WITHOUT the current one — used by the emailed reset flow. Bumps
+    `password_changed`, which revokes every previously-issued token AND any other outstanding reset
+    link (those are signed against the old password_changed → become invalid). Single-use by design."""
+    if not new_password or len(new_password) < 8:
+        raise AuthError("new password must be at least 8 characters")
+    d = _load()
+    u = d.get(_canon(username))
+    if not u:
+        raise AuthError("no such user")
+    salt = os.urandom(16)
+    u["salt"] = salt.hex()
+    u["hash"] = _hash(new_password, salt)
+    u["password_changed"] = int(time.time())
+    _save(d)
+
+
+def _pw_changed(username: str) -> str:
+    return str(int((_load().get(_canon(username)) or {}).get("password_changed", 0)))
+
+
+def _purpose_sig(body: str) -> str:
+    sig = hmac.new(_secret(), body.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(sig).decode().rstrip("=")
+
+
+def issue_purpose_token(username: str, purpose: str, ttl: int, bind: str = "") -> str:
+    """A short-lived, signed, single-purpose token: username.purpose.issued.ttl.sig . `bind` is mixed
+    into the signature (not the token) so callers can tie validity to mutable state (e.g. a reset
+    token bound to password_changed dies the moment the password changes → single use)."""
+    username = _canon(username)
+    issued = str(int(time.time()))
+    body = f"{username}.{purpose}.{issued}.{ttl}.{bind}"
+    return f"{username}.{purpose}.{issued}.{ttl}.{_purpose_sig(body)}"
+
+
+def parse_purpose_token(token: str, purpose: str, bind: str = ""):
+    """Return the username from a valid, unexpired token for this purpose+bind, else None."""
+    parts = (token or "").split(".")
+    if len(parts) != 5:
+        return None
+    username, p, issued, ttl, sig = parts
+    if p != purpose:
+        return None
+    body = f"{username}.{p}.{issued}.{ttl}.{bind}"
+    if not hmac.compare_digest(_purpose_sig(body), sig):
+        return None
+    try:
+        issued_i, ttl_i = int(issued), int(ttl)
+    except ValueError:
+        return None
+    if issued_i + ttl_i < time.time():
+        return None
+    if _canon(username) not in _load():
+        return None
+    return _canon(username)
+
+
+# convenience wrappers for the two flows (reset is single-use via password_changed binding)
+def make_reset_token(username: str, ttl: int = 1800) -> str:
+    return issue_purpose_token(username, "reset", ttl, bind=_pw_changed(username))
+
+
+def check_reset_token(token: str):
+    parts = (token or "").split(".")
+    if len(parts) != 5:
+        return None
+    return parse_purpose_token(token, "reset", bind=_pw_changed(parts[0]))
+
+
+def make_verify_token(username: str, ttl: int = 86400) -> str:
+    return issue_purpose_token(username, "verify", ttl, bind=get_email(username))
+
+
+def check_verify_token(token: str):
+    parts = (token or "").split(".")
+    if len(parts) != 5:
+        return None
+    return parse_purpose_token(token, "verify", bind=get_email(parts[0]))
 
 
 def verify(username: str, password: str) -> bool:

@@ -19,6 +19,10 @@ services:
       - VSCODE_SSH_HOST=${VSCODE_SSH_HOST:-}
       - STT_UPSTREAM=${STT_UPSTREAM:-}
       - CCCHAT_ADMINS=${CCCHAT_ADMINS:-}
+      # Resend transactional email (password reset / verification) — values in the gitignored .env
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - RESEND_FROM=${RESEND_FROM:-onboarding@resend.dev}
+      - CCCHAT_BASE_URL=${CCCHAT_BASE_URL:-}
       # Optional Cloudflare Access strict-JWT mode (set both to enable):
       # - CF_ACCESS_TEAM_DOMAIN=${CF_ACCESS_TEAM_DOMAIN:-}
       # - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}

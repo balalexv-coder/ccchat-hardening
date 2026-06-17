@@ -21,6 +21,10 @@ services:
       - VSCODE_SSH_HOST=${VSCODE_SSH_HOST:-}
       - STT_UPSTREAM=${STT_UPSTREAM:-}
       - CCCHAT_ADMINS=${CCCHAT_ADMINS:-}
+      # Resend transactional email (password reset / verification) — values in the gitignored .env
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - RESEND_FROM=${RESEND_FROM:-onboarding@resend.dev}
+      - CCCHAT_BASE_URL=${CCCHAT_BASE_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./work:/work

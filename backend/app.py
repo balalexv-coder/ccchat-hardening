@@ -16,10 +16,10 @@ import urllib.parse
 import httpx
 import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, Response, JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import appconfig, ideas_store, mounts_store, notify, push_store, settings_store, userauth
+from . import appconfig, ideas_store, mailer, mounts_store, notify, push_store, settings_store, userauth
 from .manager import Manager, _email_slug, ttyd_credential, code_token
 from .session import Session
 
@@ -275,10 +275,20 @@ async def auth_register(request: Request):
     if not _rate_ok("reg:" + _client_ip(request), 5, 3600):
         raise HTTPException(429, "too many registrations from this address — try again later")
     body = await request.json()
+    email = (body.get("email") or "").strip()
+    if not userauth.EMAIL_RE.match(email):
+        raise HTTPException(400, "enter a valid email")
     try:
-        username = userauth.register(body.get("username", ""), body.get("password", ""))
+        username = userauth.register(body.get("username", ""), body.get("password", ""), email)
     except userauth.AuthError as e:
         raise HTTPException(400, str(e))
+    # fire off the email-verification link (best-effort; never blocks/fails registration)
+    if mailer.enabled():
+        try:
+            mailer.send_verify(userauth.get_email(username), username,
+                               userauth.make_verify_token(username))
+        except Exception:
+            pass
     resp = JSONResponse({"username": username, "is_admin": _is_admin(username),
                          "approved": userauth.is_approved(username)})
     _set_auth_cookie(resp, username)
@@ -325,6 +335,96 @@ def auth_me(request: Request):
     username = current_user(request)
     return {"username": username, "is_admin": _is_admin(username),
             "approved": userauth.is_approved(username)}
+
+
+# ----- password recovery by email (Resend) -----
+_RESET_HTML = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Новый пароль — ccchat</title>
+<body style="font-family:system-ui,sans-serif;background:#0d0d0f;color:#e8e8ea;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center">
+<div style="background:#16161a;border:1px solid #2a2a30;border-radius:14px;padding:30px;width:320px">
+  <h2 style="margin:0 0 16px">Новый пароль</h2>
+  <input id="p1" type="password" placeholder="Новый пароль (мин. 8)" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;border-radius:8px;border:1px solid #333;background:#0e0e11;color:#eee">
+  <input id="p2" type="password" placeholder="Повтори пароль" style="width:100%;box-sizing:border-box;margin-bottom:14px;padding:10px;border-radius:8px;border:1px solid #333;background:#0e0e11;color:#eee">
+  <button id="go" style="width:100%;padding:11px;border:none;border-radius:8px;background:#3b6fd4;color:#fff;font:inherit;font-weight:600;cursor:pointer">Сохранить</button>
+  <div id="st" style="margin-top:12px;font-size:14px;color:#bdbdc4;min-height:20px"></div>
+</div>
+<script>
+const token=new URLSearchParams(location.search).get('token')||'';
+const $=id=>document.getElementById(id);
+$('go').onclick=async()=>{
+  const a=$('p1').value,b=$('p2').value;
+  if(a.length<8){$('st').textContent='Минимум 8 символов';return;}
+  if(a!==b){$('st').textContent='Пароли не совпадают';return;}
+  $('go').disabled=true;$('st').textContent='…';
+  try{
+    const r=await fetch('/api/auth/reset',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,new_password:a})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok){$('st').innerHTML='✅ Пароль изменён. <a href="/" style="color:#5b9bd5">Войти</a>';}
+    else{$('st').textContent=(j.detail||'Ошибка');$('go').disabled=false;}
+  }catch(e){$('st').textContent='Сетевая ошибка';$('go').disabled=false;}
+};
+</script></body>"""
+
+
+@app.post("/api/auth/forgot")
+async def auth_forgot(request: Request):
+    # Rate-limit and ALWAYS return ok — never reveal whether an account/email exists.
+    if not _rate_ok("forgot:" + _client_ip(request), 5, 600):
+        raise HTTPException(429, "too many requests — try again later")
+    body = await request.json()
+    ident = (body.get("identifier") or body.get("email") or body.get("username") or "").strip()
+    uname = userauth._canon(ident) if userauth.user_exists(ident) else userauth.find_by_email(ident)
+    if uname:
+        email = userauth.get_email(uname)
+        if email and mailer.enabled():
+            try:
+                mailer.send_reset(email, uname, userauth.make_reset_token(uname))
+            except Exception:
+                pass
+    return {"ok": True}
+
+
+@app.post("/api/auth/reset")
+async def auth_reset(request: Request):
+    if not _rate_ok("reset:" + _client_ip(request), 10, 600):
+        raise HTTPException(429, "too many requests — try again later")
+    body = await request.json()
+    uname = userauth.check_reset_token(body.get("token") or "")
+    if not uname:
+        raise HTTPException(400, "reset link is invalid or has expired")
+    try:
+        userauth.set_password_reset(uname, body.get("new_password") or "")
+    except userauth.AuthError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+def _simple_page(title: str, msg: str) -> HTMLResponse:
+    return HTMLResponse(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{title}</title>'
+        '<body style="font-family:system-ui,sans-serif;background:#0d0d0f;color:#e8e8ea;display:flex;'
+        'min-height:100vh;margin:0;align-items:center;justify-content:center">'
+        '<div style="background:#16161a;border:1px solid #2a2a30;border-radius:14px;padding:30px;max-width:380px;text-align:center">'
+        f'<h2 style="margin-top:0">{title}</h2><p style="color:#bdbdc4">{msg}</p>'
+        '<a href="/" style="color:#5b9bd5">← ccchat</a></div></body>')
+
+
+@app.get("/verify-email", response_class=HTMLResponse)
+def verify_email_page(token: str = ""):
+    uname = userauth.check_verify_token(token)
+    if uname:
+        try:
+            userauth.set_email_verified(uname)
+        except Exception:
+            pass
+        return _simple_page("Email подтверждён", "✅ Адрес подтверждён. Можешь вернуться в ccchat.")
+    return _simple_page("Ссылка недействительна", "❌ Ссылка устарела или неверна.")
+
+
+@app.get("/reset", response_class=HTMLResponse)
+def reset_page(token: str = ""):
+    return HTMLResponse(_RESET_HTML)
 
 
 # ----- admin: user approval (gate the registration → app transition)
