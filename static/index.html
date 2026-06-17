@@ -511,8 +511,6 @@
     <div id="authEmailRow" style="display:none">
       <label for="authEmail">Email</label>
       <input id="authEmail" type="email" autocomplete="email" autocapitalize="off" spellcheck="false">
-      <label for="authEmail2" style="display:block;margin-top:10px">Повтори email</label>
-      <input id="authEmail2" type="email" autocapitalize="off" spellcheck="false">
     </div>
     <button class="primary" id="authBtn">Sign in</button>
     <div class="status" id="authStatus"></div>
@@ -2231,9 +2229,8 @@ async function doAuth(){
   if(!username||!password){ $('authStatus').textContent='enter username and password'; return; }
   const payload={username,password};
   if(m==='register'){
-    const em=$('authEmail').value.trim().toLowerCase(), em2=$('authEmail2').value.trim().toLowerCase();
+    const em=$('authEmail').value.trim().toLowerCase();
     if(!em){ $('authStatus').textContent='введите email'; return; }
-    if(em!==em2){ $('authStatus').textContent='email не совпадает'; return; }
     payload.email=em;
   }
   $('authBtn').disabled=true; $('authStatus').textContent='…';
