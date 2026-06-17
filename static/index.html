@@ -496,6 +496,16 @@
   #quoteMenu button{background:var(--accent);color:var(--on-accent);border:none;border-radius:7px;
                     padding:6px 11px;font:inherit;font-size:13px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.4)}
   #quoteMenu button:hover{filter:brightness(1.1)}
+  /* "in reply to" card shown atop a reply/quote message — click to jump to the original */
+  .msg .replyquote{display:block;margin:0 0 8px;padding:6px 9px;border-left:3px solid rgba(255,255,255,.55);
+    background:rgba(0,0,0,.22);border-radius:6px;cursor:pointer;font-size:12px;transition:background .12s}
+  .msg .replyquote:hover{background:rgba(0,0,0,.34)}
+  .msg .replyquote.nojump{cursor:default}
+  .msg .replyquote .rqlabel{display:block;font-weight:600;color:rgba(255,255,255,.92);margin-bottom:2px}
+  .msg .replyquote .rqtext{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+    overflow:hidden;color:rgba(255,255,255,.72)}
+  @keyframes msgflash{0%,100%{box-shadow:0 0 0 0 transparent}30%{box-shadow:0 0 0 3px var(--accent)}}
+  .msg.flash{animation:msgflash 1.5s ease}
 </style>
 </head>
 <body>
@@ -1380,21 +1390,50 @@ function fmtTime(ts){
 }
 // add the footer (time + ↩ reply button) and remember the message text/role for replying/quoting
 function decorate(el, role, text, ts){
-  el._msgText=text; el._msgRole=role;
+  el._msgText=text; el._msgRole=role; el._msgTs=ts||'';
+  if(ts) el.dataset.ts=ts;             // so a reply card can scroll back to this exact message
+  el.dataset.role=role;
   const meta=document.createElement('div'); meta.className='msgmeta';
   const rb=document.createElement('button'); rb.type='button'; rb.className='msgact'; rb.textContent='↩'; rb.title='Ответить';
-  rb.onclick=ev=>{ ev.stopPropagation(); setReply({text:el._msgText, role:el._msgRole, partial:false}); };
+  rb.onclick=ev=>{ ev.stopPropagation(); setReply({text:el._msgText, role:el._msgRole, ts:el._msgTs, partial:false}); };
   const tm=document.createElement('span'); tm.className='msgtime'; tm.textContent=fmtTime(ts);
   meta.append(rb,tm); el.appendChild(meta);
   return el;
 }
-// build the "что отвечаю / что пишу" prefix that gets sent into the chat
+// The reply/quote reference is sent as a structured ```reply block (JSON: role/ts/text) so the UI can
+// render it as a distinct, clickable "quoted message" card (and scroll back to the original), while
+// claude still reads what is being replied to. The user's actual message follows the block.
 function quoteBlock(ref){
-  const who = ref.partial ? ('цитата ('+(ref.role==='user'?'я':'ассистент')+')')
-                          : (ref.role==='user' ? 'в ответ на моё сообщение' : 'в ответ ассистенту');
-  const src=(ref.text||'').slice(0,4000);
-  const q=src.split('\n').map(l=>'> '+l).join('\n');
-  return '↩ '+who+':\n'+q+'\n\n';
+  const meta={role:ref.role||'', ts:ref.ts||'', partial:!!ref.partial, text:(ref.text||'').slice(0,4000)};
+  return '```reply\n'+JSON.stringify(meta)+'\n```\n';
+}
+// parse a leading ```reply {json} ``` block -> {meta, body}, or null
+function parseReplyBlock(text){
+  const m=/^```reply\s*\n([\s\S]*?)\n```\n?/.exec(text||'');
+  if(!m) return null;
+  try{ return {meta: JSON.parse(m[1]), body: text.slice(m[0].length)}; }
+  catch(e){ return null; }
+}
+// the clickable "in reply to" card shown atop a message
+function replyCard(meta){
+  const c=document.createElement('div'); c.className='replyquote';
+  const who = meta.role==='assistant' ? ' ассистенту' : (meta.role==='user' ? ' (моё)' : '');
+  const lbl = (meta.partial ? '❝ цитата' : '↩ в ответ') + who;
+  c.innerHTML='<span class="rqlabel"></span><span class="rqtext"></span>';
+  c.querySelector('.rqlabel').textContent=lbl;
+  c.querySelector('.rqtext').textContent=(meta.text||'').replace(/\s+/g,' ').trim();
+  if(meta.ts){ c.title='Перейти к исходному сообщению'; c.onclick=()=>scrollToMessage(meta.ts, meta.role); }
+  else { c.classList.add('nojump'); }
+  return c;
+}
+function scrollToMessage(ts, role){
+  if(!ts) return;
+  const all=[...document.querySelectorAll('#log .msg[data-ts]')];
+  const el = all.find(m=>m.dataset.ts===ts && (!role||m.dataset.role===role)) || all.find(m=>m.dataset.ts===ts);
+  if(!el) return;
+  el.scrollIntoView({behavior:'smooth', block:'center'});
+  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+  setTimeout(()=>el.classList.remove('flash'), 1600);
 }
 let replyRef=null;
 function setReply(ref){ replyRef=ref; renderReplyBar(); try{inp.focus();}catch(e){} }
@@ -1410,14 +1449,21 @@ function renderReplyBar(){
   bar.querySelector('.rbx').onclick=clearReply;
 }
 function userBubble(text, ts){
-  // if the message references an image path, render markdown (so it shows as a preview);
-  // otherwise keep it as a plain text bubble.
-  if(window.marked && IMG_RE.test(text)){
+  // a reply/quote message carries a leading ```reply block — render it as a clickable card and show
+  // only the actual message as the body. (Plain messages and old-format replies fall through.)
+  const rep=parseReplyBlock(text);
+  const body=rep?rep.body:text;
+  let d;
+  // if the body references an image path, render markdown (so it shows as a preview); else plain text.
+  if(window.marked && IMG_RE.test(body)){
     IMG_RE.lastIndex=0;
-    const d=document.createElement('div'); d.className='msg user md';
-    d.innerHTML=mdSafe(imgify(text)); place(d); scroll(); return decorate(d,'user',text,ts);
+    d=document.createElement('div'); d.className='msg user md'; d.innerHTML=mdSafe(imgify(body));
+  } else {
+    d=document.createElement('div'); d.className='msg user'; d.textContent=body;
   }
-  return decorate(bubble('user',text),'user',text,ts);
+  if(rep) d.insertBefore(replyCard(rep.meta), d.firstChild);
+  place(d); scroll();
+  return decorate(d,'user',body,ts);   // store the real message (body) for re-replying
 }
 // Render a ```mermaid block as a link card opening the standalone viewer (/mermaid.html) in a new
 // tab. The diagram source travels in the URL hash, so it is never sent to the server.
@@ -1842,14 +1888,14 @@ send.onclick=submit;
       let n=s.anchorNode; let el=n&&(n.nodeType===1?n:n.parentElement);
       const msg=el&&el.closest&&el.closest('.msg.user, .msg.assistant');
       if(!msg){ hide(); return; }
-      sel={text:txt, role: msg.classList.contains('user')?'user':'assistant'};
+      sel={text:txt, role: msg.classList.contains('user')?'user':'assistant', ts: msg.dataset.ts||''};
       const r=s.getRangeAt(0).getBoundingClientRect();
       menu.style.display='block';
       menu.style.left=Math.max(8, window.scrollX+r.left)+'px';
       menu.style.top=(window.scrollY+r.bottom+6)+'px';
     },10);
   });
-  btn.onclick=()=>{ if(sel) setReply({text:sel.text, role:sel.role, partial:true});
+  btn.onclick=()=>{ if(sel) setReply({text:sel.text, role:sel.role, ts:sel.ts, partial:true});
                     const g=window.getSelection(); if(g) g.removeAllRanges(); hide(); };
   document.addEventListener('mousedown', e=>{ if(!menu.contains(e.target)) hide(); });
   document.addEventListener('scroll', hide, true);
