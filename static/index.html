@@ -340,6 +340,7 @@
   #authGate .toggle{margin-top:14px;font-size:13px;color:var(--muted);text-align:center}
   #authGate .toggle a{color:var(--accent);cursor:pointer;text-decoration:underline}
   #authGate .status{margin-top:12px;font-size:13px;color:var(--danger);min-height:1.2em;text-align:center}
+  #authGate .status.ok{color:#5fd07e}   /* success (e.g. reset link sent), not an error */
   #who .logout{float:right;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:11px}
   /* settings: full page with a left tab rail (replaces the chat/sessions view) */
   /* pending-approval gate (shown to logged-in but not-yet-approved users) */
@@ -2215,11 +2216,13 @@ function renderAuthMode(){
 }
 async function doAuth(){
   const m=_authMode;
+  $('authStatus').className='status';   // default = error/red; success paths opt into .ok (green)
   if(m==='forgot'){
     const ident=$('authUser').value.trim();
     if(!ident){ $('authStatus').textContent='введите email или логин'; return; }
     $('authBtn').disabled=true; $('authStatus').textContent='…';
     try{ await fetch('/api/auth/forgot',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({identifier:ident})});
+         $('authStatus').className='status ok';
          $('authStatus').textContent='Если аккаунт существует, на его email отправлена ссылка для сброса.'; }
     catch(e){ $('authStatus').textContent='сетевая ошибка'; }
     $('authBtn').disabled=false; return;
