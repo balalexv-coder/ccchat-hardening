@@ -5,29 +5,21 @@ each value is a list of idea strings. Same atomic-write pattern as push_store / 
 Corrections ("tweaks") are NOT stored here — they auto-send at the next opening and are ephemeral.
 Only the manually-held ideas need to survive a reload and travel between devices.
 """
-import json
 import os
 from pathlib import Path
 
+from . import jsonstore
+
 IDEAS_FILE = Path(os.environ.get("CCCHAT_IDEAS", "/state/ideas.json"))
+_LOCK = jsonstore.lock_for(IDEAS_FILE)
 
 
 def _load() -> dict:
-    try:
-        return json.loads(IDEAS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return jsonstore.load(IDEAS_FILE, {})
 
 
 def _save(d: dict) -> None:
-    IDEAS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = IDEAS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except Exception:
-        pass
-    tmp.replace(IDEAS_FILE)
+    jsonstore.save(IDEAS_FILE, d)
 
 
 def get(sid: str) -> list:
@@ -49,10 +41,11 @@ def replace(sid: str, ideas: list) -> list:
             if x:
                 clean.append(x[:8000])
     clean = clean[:200]
-    d = _load()
-    if clean:
-        d[sid] = clean
-    else:
-        d.pop(sid, None)
-    _save(d)
+    with _LOCK:
+        d = _load()
+        if clean:
+            d[sid] = clean
+        else:
+            d.pop(sid, None)
+        _save(d)
     return clean

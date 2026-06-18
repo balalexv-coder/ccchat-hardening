@@ -16,12 +16,14 @@ Global config (not per-user), stored in /state/mounts.json as a list of entries:
 Empty by default (no entries on a fresh install). Admins edit the table via /api/admin/mounts;
 everyone selects from it (filtered) at session creation.
 """
-import json
 import os
 import re
 from pathlib import Path
 
+from . import jsonstore
+
 MOUNTS_FILE = Path(os.environ.get("CCCHAT_MOUNTS", "/state/mounts.json"))
+_LOCK = jsonstore.lock_for(MOUNTS_FILE)
 
 _NAME_RE = re.compile(r"[^a-z0-9_-]+")
 
@@ -46,18 +48,12 @@ def _under(norm: str, prefixes) -> bool:
 
 def _load() -> list:
     """The configured mounts. Empty list on a fresh install (no hardcoded defaults)."""
-    try:
-        d = json.loads(MOUNTS_FILE.read_text(encoding="utf-8"))
-        return d if isinstance(d, list) else []
-    except Exception:
-        return []
+    d = jsonstore.load(MOUNTS_FILE, [])
+    return d if isinstance(d, list) else []
 
 
 def _save(items: list) -> None:
-    MOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = MOUNTS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(MOUNTS_FILE)
+    jsonstore.save(MOUNTS_FILE, items)
 
 
 def all_mounts() -> list:

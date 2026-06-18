@@ -20,10 +20,13 @@ import time
 import uuid
 from pathlib import Path
 
-from . import mounts_store, settings_store, userauth
+from . import jsonstore, mounts_store, settings_store, userauth
 from .session import WIKI_LOAD_CMD
 
 STATE_FILE = Path(os.environ.get("CCCHAT_STATE", "/state/sessions.json"))
+# Guards the read-modify-write of the session state file (create/update/delete) against concurrent
+# writers (multiple requests, the reaper) clobbering each other's change. See backend/jsonstore.py.
+_STATE_LOCK = jsonstore.lock_for(STATE_FILE)
 # Host-side root for per-session workspaces. IMPORTANT: this is a HOST path (the docker daemon
 # resolves bind mounts against the host fs), passed in via env so it matches the real host dir.
 HOST_WORK_ROOT = os.environ.get("HOST_WORK_ROOT", "/srv/vivarium/work")
@@ -75,17 +78,11 @@ def _email_slug(email: str) -> str:
 
 
 def _load() -> dict:
-    try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return jsonstore.load(STATE_FILE, {})
 
 
 def _save(d: dict):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    jsonstore.save(STATE_FILE, d)
 
 
 def _docker(*args, timeout=60) -> subprocess.CompletedProcess:
@@ -266,7 +263,6 @@ class Manager:
             return 0
 
     def create(self, email: str, name: str, mounts: list, cpus=0, mem_mb=0) -> dict:
-        d = _load()
         key = _email_slug(email)
         sid = uuid.uuid4().hex[:12]
         cname = f"ccs_{key}_{sid}"
@@ -288,8 +284,12 @@ class Manager:
             if not f.exists():
                 f.write_text("", encoding="utf-8")
         self._start_container(sess)
-        d.setdefault(key, []).append(sess)
-        _save(d)
+        # reload fresh + append under the lock so a concurrent create/update/delete (or the reaper)
+        # can't clobber our new session, nor we theirs.
+        with _STATE_LOCK:
+            d = _load()
+            d.setdefault(key, []).append(sess)
+            _save(d)
         self._write_session_index(key)
         return sess
 
@@ -960,15 +960,17 @@ class Manager:
         """Edit a session's name, mounts and/or resource limits. Changing mounts or limits recreates
         the container (they're set at `docker run`); the workspace + transcript persist on the host,
         the claude process restarts. Returns the session, or None if not found/invalid."""
-        d = _load(); key = _email_slug(email)
-        for s in d.get(key, []):
-            if s["id"] != sid:
-                continue
+        key = _email_slug(email)
+        recreate = False
+        with _STATE_LOCK:
+            d = _load()
+            s = next((x for x in d.get(key, []) if x["id"] == sid), None)
+            if not s:
+                return None
             if name is not None:
                 if not _NAME_RE.match(name):
                     return None
                 s["name"] = name.strip()[:60]
-            recreate = False
             if mounts is not None:
                 new_mounts = self._allowed_mounts(email, mounts)
                 if new_mounts != s.get("mounts"):
@@ -985,22 +987,23 @@ class Manager:
                     s["mem_mb"] = nm
                     recreate = True
             _save(d)
-            if name is not None:
-                self._write_session_index(key)
-            if recreate:
-                self.recreate_container(s)   # rm -f + run with the new -v mounts/limits
-            return s
-        return None
+        if name is not None:
+            self._write_session_index(key)
+        if recreate:
+            self.recreate_container(s)   # rm -f + run with the new -v mounts/limits (slow; no lock)
+        return s
 
     def delete(self, email: str, sid: str):
-        d = _load(); key = _email_slug(email)
-        lst = d.get(key, [])
-        s = next((x for x in lst if x["id"] == sid), None)
+        key = _email_slug(email)
+        with _STATE_LOCK:
+            s = next((x for x in _load().get(key, []) if x["id"] == sid), None)
         if not s:
             return False
-        _docker("rm", "-f", s["container"])
-        d[key] = [x for x in lst if x["id"] != sid]
-        _save(d)
+        _docker("rm", "-f", s["container"])   # slow; outside the lock
+        with _STATE_LOCK:                      # reload so we don't clobber a concurrent change
+            d = _load()
+            d[key] = [x for x in d.get(key, []) if x["id"] != sid]
+            _save(d)
         self._write_session_index(key)
         return True
 

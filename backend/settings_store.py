@@ -16,28 +16,21 @@ import json
 import os
 from pathlib import Path
 
+from . import jsonstore
+
 SETTINGS_FILE = Path(os.environ.get("CCCHAT_USER_SETTINGS", "/state/user-settings.json"))
+_LOCK = jsonstore.lock_for(SETTINGS_FILE)
 
 USER_FIELDS = ("credentials", "oauth_token")
 ADMIN_FIELDS = ()  # reserved (e.g. limits, forced rotation) — architected, none yet
 
 
 def _load() -> dict:
-    try:
-        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return jsonstore.load(SETTINGS_FILE, {})
 
 
 def _save(d: dict) -> None:
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = SETTINGS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except Exception:
-        pass
-    tmp.replace(SETTINGS_FILE)
+    jsonstore.save(SETTINGS_FILE, d)
 
 
 def get(slug: str) -> dict:
@@ -100,14 +93,15 @@ def parse_credentials(raw):
 def update(slug: str, fields: dict, allow_admin: bool = False) -> dict:
     """Merge allowed fields into a user's settings. Unknown/disallowed keys are ignored."""
     allowed = set(USER_FIELDS) | (set(ADMIN_FIELDS) if allow_admin else set())
-    d = _load()
-    cur = d.get(slug, {})
-    for k, v in (fields or {}).items():
-        if k in allowed and v is not None:
-            cur[k] = v
-    d[slug] = cur
-    _save(d)
-    return cur
+    with _LOCK:
+        d = _load()
+        cur = d.get(slug, {})
+        for k, v in (fields or {}).items():
+            if k in allowed and v is not None:
+                cur[k] = v
+        d[slug] = cur
+        _save(d)
+        return cur
 
 
 def set_credentials(slug: str, raw) -> dict:

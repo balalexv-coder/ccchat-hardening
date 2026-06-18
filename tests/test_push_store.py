@@ -1,6 +1,8 @@
 """Unit tests for the Web Push subscription store and VAPID key generation."""
 import importlib
 
+import pytest
+
 
 def _fresh(tmp_path, monkeypatch):
     monkeypatch.setenv("CCCHAT_PUSH", str(tmp_path / "push.json"))
@@ -43,6 +45,20 @@ def test_add_ignores_blank(tmp_path, monkeypatch):
     ps.add("", _sub("https://push/x"))
     ps.add("dan", {"keys": {}})                # no endpoint
     assert ps.get("dan") == []
+
+
+def test_corrupt_file_does_not_silently_wipe(tmp_path, monkeypatch):
+    """A corrupt store must raise, not read as {} — otherwise the next write would wipe everyone's
+    subscriptions. The good data stays on disk for recovery."""
+    from backend import jsonstore
+    ps = _fresh(tmp_path, monkeypatch)
+    ps.add("erin", _sub("https://push/keep"))
+    (tmp_path / "push.json").write_text("{ broken", encoding="utf-8")
+    with pytest.raises(jsonstore.StoreError):
+        ps.get("erin")            # _load() raises instead of returning {}
+    with pytest.raises(jsonstore.StoreError):
+        ps.add("erin", _sub("https://push/new"))   # the wiping write never happens
+    assert (tmp_path / "push.json").read_text(encoding="utf-8") == "{ broken"
 
 
 def test_vapid_key_stable(tmp_path, monkeypatch):

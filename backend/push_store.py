@@ -6,29 +6,21 @@ session owner's devices directly. Each value is a list of W3C PushSubscription o
 (which happens on every "enable") doesn't pile up. Follows the same atomic-write pattern as
 appconfig / mounts_store.
 """
-import json
 import os
 from pathlib import Path
 
+from . import jsonstore
+
 PUSH_FILE = Path(os.environ.get("CCCHAT_PUSH", "/state/push-subscriptions.json"))
+_LOCK = jsonstore.lock_for(PUSH_FILE)
 
 
 def _load() -> dict:
-    try:
-        return json.loads(PUSH_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return jsonstore.load(PUSH_FILE, {})
 
 
 def _save(d: dict) -> None:
-    PUSH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = PUSH_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except Exception:
-        pass
-    tmp.replace(PUSH_FILE)
+    jsonstore.save(PUSH_FILE, d)
 
 
 def get(slug: str) -> list:
@@ -41,20 +33,22 @@ def add(slug: str, sub: dict) -> None:
     ep = (sub or {}).get("endpoint")
     if not slug or not ep:
         return
-    d = _load()
-    lst = [s for s in d.get(slug, []) if s.get("endpoint") != ep]
-    lst.append(sub)
-    d[slug] = lst
-    _save(d)
+    with _LOCK:
+        d = _load()
+        lst = [s for s in d.get(slug, []) if s.get("endpoint") != ep]
+        lst.append(sub)
+        d[slug] = lst
+        _save(d)
 
 
 def clear(slug: str) -> int:
     """Drop ALL subscriptions for this user (a global "disable on every device"). Returns how many."""
-    d = _load()
-    n = len(d.get(slug, []))
-    if slug in d:
-        d.pop(slug, None)
-        _save(d)
+    with _LOCK:
+        d = _load()
+        n = len(d.get(slug, []))
+        if slug in d:
+            d.pop(slug, None)
+            _save(d)
     return n
 
 
@@ -62,9 +56,10 @@ def remove(slug: str, endpoint: str) -> None:
     """Drop a subscription by endpoint (on unsubscribe, or when the push service reports it gone)."""
     if not slug or not endpoint:
         return
-    d = _load()
-    if slug in d:
-        d[slug] = [s for s in d[slug] if s.get("endpoint") != endpoint]
-        if not d[slug]:
-            d.pop(slug, None)
-        _save(d)
+    with _LOCK:
+        d = _load()
+        if slug in d:
+            d[slug] = [s for s in d[slug] if s.get("endpoint") != endpoint]
+            if not d[slug]:
+                d.pop(slug, None)
+            _save(d)
