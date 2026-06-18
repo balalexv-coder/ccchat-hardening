@@ -1867,8 +1867,16 @@ cw.addEventListener('drop',e=>{e.preventDefault();cw.classList.remove('drag'); i
 function submit(){
   const t=inp.value.trim();
   const ready=attached.filter(a=>a.path);
-  if((!t && !ready.length && !replyRef)||!ws||ws.readyState!==1)return;
-  if(attached.some(a=>a.uploading))return;  // wait for uploads to finish
+  // DIAGNOSTIC (user reports messages occasionally "swallowed" — pressed Send but nothing reaches the
+  // console): log EVERY Send press with full context + the exact outcome, so a dropped message shows
+  // which guard ate it. Outcomes: send.drop{why} | send.queue | send.accept ; see also send.rawdrop
+  // in _rawSend (ws dies AFTER accept). Read on the host: tail -f state/upload-debug.log | grep send.
+  const wsState = ws ? ws.readyState : -1;   // 0 CONNECTING · 1 OPEN · 2 CLOSING · 3 CLOSED · -1 none
+  const ctx={len:t.length, att:ready.length, uploading:attached.some(a=>a.uploading), busy:_busy, ws:wsState, reply:!!replyRef};
+  clog('send.press', ctx);
+  if(!t && !ready.length && !replyRef){ clog('send.drop', Object.assign({why:'empty'}, ctx)); return; }
+  if(!ws || ws.readyState!==1){ clog('send.drop', Object.assign({why:'ws_not_open'}, ctx)); return; }
+  if(attached.some(a=>a.uploading)){ clog('send.drop', Object.assign({why:'uploading'}, ctx)); return; }
   if(t) pushHist(t);                         // remember what you typed for ↑/↓ recall
   let text=t;
   if(ready.length){
@@ -1880,6 +1888,7 @@ function submit(){
     // claude is mid-turn — don't just queue blindly; ask whether this is a quick "tweak"
     // (auto-sends at the next opening, current behaviour) or an "idea" to revisit later (parked).
     openQueueTypePop(text);
+    clog('send.queue', {len:text.length});
     return;   // keep the input/attachments intact until a type is chosen (Cancel leaves them)
   }
   // free → send right away as before
@@ -1887,6 +1896,7 @@ function submit(){
   inp.value='';inp.style.height='auto';hideCmds();
   attached=[]; renderAttachments();
   renderQueue();
+  clog('send.accept', {len:text.length});
   flushQueue();   // sends now (we're free)
 }
 send.onclick=submit;
@@ -2445,7 +2455,13 @@ function renderQueue(){
 }
 // include this device's push endpoint so the server can target the "task done" push only at the
 // device you last messaged from (no buzzing your phone while you chat from the laptop)
-function _rawSend(text){ _turnDone=false; if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'input',text,endpoint:_pushEndpoint||''})); }
+function _rawSend(text){
+  _turnDone=false;
+  if(ws&&ws.readyState===1){ ws.send(JSON.stringify({type:'input',text,endpoint:_pushEndpoint||''})); }
+  // ws died between accept and send -> the item was already popped from _sendQ, so it is LOST and
+  // _busy is now stuck. Log it: this is a distinct swallow path from the submit() guards.
+  else { clog('send.rawdrop', {ws: ws?ws.readyState:-1, len:(text||'').length}); }
+}
 function flushQueue(){
   if(_busy) return;
   const i=_sendQ.findIndex(q=>q.type==='fix');   // ideas are never auto-flushed
