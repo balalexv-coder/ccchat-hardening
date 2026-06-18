@@ -14,7 +14,6 @@ HMAC-signed cookie token `username.issuedAt.sig` — stateless, but revoked when
 import base64
 import hashlib
 import hmac
-import json
 import os
 import re
 import secrets
@@ -22,7 +21,12 @@ import sys
 import time
 from pathlib import Path
 
+from . import jsonstore
+
 USERS_FILE = Path(os.environ.get("CCCHAT_USERS", "/state/users.json"))
+# Serialises read-modify-write of users.json (register/approve/password/email changes) so concurrent
+# writers can't clobber each other; also makes corruption fail loudly instead of wiping. See jsonstore.
+_LOCK = jsonstore.lock_for(USERS_FILE)
 COOKIE_NAME = "ccchat_auth"
 TOKEN_TTL = int(os.environ.get("CCCHAT_AUTH_TTL_DAYS", "30")) * 86400
 
@@ -65,13 +69,14 @@ def is_approved(username: str) -> bool:
 
 def set_approved(username: str, approved: bool) -> bool:
     """Admin action: flip a user's approval. Raises AuthError if the user doesn't exist."""
-    d = _load()
-    u = d.get(_canon(username))
-    if not u:
-        raise AuthError("no such user")
-    u["approved"] = bool(approved)
-    u["approved_at"] = int(time.time()) if approved else None
-    _save(d)
+    with _LOCK:
+        d = _load()
+        u = d.get(_canon(username))
+        if not u:
+            raise AuthError("no such user")
+        u["approved"] = bool(approved)
+        u["approved_at"] = int(time.time()) if approved else None
+        _save(d)
     return bool(approved)
 
 
@@ -119,21 +124,11 @@ def _secret() -> bytes:
 
 # ---- user store ----
 def _load() -> dict:
-    try:
-        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return jsonstore.load(USERS_FILE, {})
 
 
 def _save(d: dict) -> None:
-    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = USERS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError as e:
-        print(f"[userauth] WARNING: could not chmod 0600 {tmp}: {e}", file=sys.stderr)
-    tmp.replace(USERS_FILE)
+    jsonstore.save(USERS_FILE, d)
 
 
 def _hash(password: str, salt: bytes) -> str:
@@ -153,13 +148,18 @@ def register(username: str, password: str, email: str = "") -> str:
     email = (email or "").strip().lower()
     if email and not EMAIL_RE.match(email):   # required-ness is enforced by the public endpoint;
         raise AuthError("enter a valid email")  # direct/seed callers may omit it
-    d = _load()
-    if key in d:
-        raise AuthError("username already taken")
-    salt = os.urandom(16)
-    d[key] = {"salt": salt.hex(), "hash": _hash(password, salt), "created": int(time.time()),
-              "approved": False, "email": email, "email_verified": False}
-    _save(d)
+    with _LOCK:
+        d = _load()
+        if key in d:
+            raise AuthError("username already taken")
+        # Email uniqueness (review H3): one email = one account, so password recovery is unambiguous.
+        # Grandfathered — only enforced for NEW registrations; pre-existing duplicates are left alone.
+        if email and _email_owner(email, d):
+            raise AuthError("this email is already registered")
+        salt = os.urandom(16)
+        d[key] = {"salt": salt.hex(), "hash": _hash(password, salt), "created": int(time.time()),
+                  "approved": False, "email": email, "email_verified": False}
+        _save(d)
     return key
 
 
@@ -168,24 +168,47 @@ def get_email(username: str) -> str:
     return (_load().get(_canon(username)) or {}).get("email", "")
 
 
-def find_by_email(email: str):
-    """Username owning this email (first match), or None. Case-insensitive."""
+def _email_owner(email: str, d: dict, verified_only: bool = False, exclude: str = None):
+    """Username owning this email, preferring a verified account. `d` is a loaded users dict (pass it
+    while holding the lock); `exclude` skips one username (for self-checks). Case-insensitive."""
     email = (email or "").strip().lower()
     if not email:
         return None
-    for k, u in _load().items():
-        if (u.get("email") or "").lower() == email:
+    fallback = None
+    for k, u in d.items():
+        if exclude and k == exclude:
+            continue
+        if (u.get("email") or "").lower() != email:
+            continue
+        if u.get("email_verified"):
             return k
-    return None
+        if not verified_only and fallback is None:
+            fallback = k
+    return fallback
+
+
+def find_by_email(email: str):
+    """Username owning this email (verified match preferred), or None. Case-insensitive."""
+    return _email_owner(email, _load())
+
+
+def is_email_verified(username: str) -> bool:
+    return bool((_load().get(_canon(username)) or {}).get("email_verified"))
 
 
 def set_email_verified(username: str) -> None:
-    d = _load()
-    u = d.get(_canon(username))
-    if not u:
-        raise AuthError("no such user")
-    u["email_verified"] = True
-    _save(d)
+    key = _canon(username)
+    with _LOCK:
+        d = _load()
+        u = d.get(key)
+        if not u:
+            raise AuthError("no such user")
+        # Don't let two accounts both end up verified on one email (review H3).
+        em = (u.get("email") or "").strip().lower()
+        if em and _email_owner(em, d, verified_only=True, exclude=key):
+            raise AuthError("this email is already verified on another account")
+        u["email_verified"] = True
+        _save(d)
 
 
 def set_password_reset(username: str, new_password: str) -> None:
@@ -194,15 +217,16 @@ def set_password_reset(username: str, new_password: str) -> None:
     link (those are signed against the old password_changed → become invalid). Single-use by design."""
     if not new_password or len(new_password) < 8:
         raise AuthError("new password must be at least 8 characters")
-    d = _load()
-    u = d.get(_canon(username))
-    if not u:
-        raise AuthError("no such user")
-    salt = os.urandom(16)
-    u["salt"] = salt.hex()
-    u["hash"] = _hash(new_password, salt)
-    u["password_changed"] = int(time.time())
-    _save(d)
+    with _LOCK:
+        d = _load()
+        u = d.get(_canon(username))
+        if not u:
+            raise AuthError("no such user")
+        salt = os.urandom(16)
+        u["salt"] = salt.hex()
+        u["hash"] = _hash(new_password, salt)
+        u["password_changed"] = int(time.time())
+        _save(d)
 
 
 def _pw_changed(username: str) -> str:
@@ -284,18 +308,19 @@ def verify(username: str, password: str) -> bool:
 def set_password(username: str, old_password: str, new_password: str) -> None:
     """Change a user's password, requiring the current one. Bumps `password_changed`, which revokes
     every previously-issued token (see parse_token). Raises AuthError on a bad current/too-short pw."""
-    d = _load()
     key = _canon(username)
-    u = d.get(key)
-    if not u or not verify(key, old_password or ""):
-        raise AuthError("current password is incorrect")
-    if not new_password or len(new_password) < 8:
-        raise AuthError("new password must be at least 8 characters")
-    salt = os.urandom(16)
-    u["salt"] = salt.hex()
-    u["hash"] = _hash(new_password, salt)
-    u["password_changed"] = int(time.time())
-    _save(d)
+    with _LOCK:
+        d = _load()
+        u = d.get(key)
+        if not u or not verify(key, old_password or ""):
+            raise AuthError("current password is incorrect")
+        if not new_password or len(new_password) < 8:
+            raise AuthError("new password must be at least 8 characters")
+        salt = os.urandom(16)
+        u["salt"] = salt.hex()
+        u["hash"] = _hash(new_password, salt)
+        u["password_changed"] = int(time.time())
+        _save(d)
 
 
 def user_exists(username: str) -> bool:
@@ -305,13 +330,14 @@ def user_exists(username: str) -> bool:
 def _seed_user(username: str, password: str, approved: bool = True) -> None:
     """Create a user directly, bypassing public-registration validation. No-op if it already exists."""
     key = _canon(username)
-    d = _load()
-    if key in d:
-        return
-    salt = os.urandom(16)
-    d[key] = {"salt": salt.hex(), "hash": _hash(password, salt), "created": int(time.time()),
-              "approved": approved}
-    _save(d)
+    with _LOCK:
+        d = _load()
+        if key in d:
+            return
+        salt = os.urandom(16)
+        d[key] = {"salt": salt.hex(), "hash": _hash(password, salt), "created": int(time.time()),
+                  "approved": approved}
+        _save(d)
 
 
 def ensure_default_admin() -> None:

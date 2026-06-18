@@ -376,7 +376,9 @@ async def auth_forgot(request: Request):
     uname = userauth._canon(ident) if userauth.user_exists(ident) else userauth.find_by_email(ident)
     if uname:
         email = userauth.get_email(uname)
-        if email and mailer.enabled():
+        # Only send to a VERIFIED email (review H3) — never trust an unverified address as a recovery
+        # channel. Still always return ok, so this reveals nothing about which accounts exist/verified.
+        if email and userauth.is_email_verified(uname) and mailer.enabled():
             try:
                 mailer.send_reset(email, uname, userauth.make_reset_token(uname))
             except Exception:

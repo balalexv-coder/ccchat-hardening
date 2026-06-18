@@ -26,6 +26,27 @@ def test_register_verify_and_rules(tmp_path, monkeypatch):
         userauth.register("bob", "1234567")          # password too short (< 8)
 
 
+def test_email_uniqueness_and_verified_recovery(tmp_path, monkeypatch):
+    """review H3: one email = one account (new regs); recovery resolution prefers the verified one;
+    empty email stays shareable (the grandfathered/cleanup state)."""
+    monkeypatch.setattr(userauth, "USERS_FILE", tmp_path / "users.json")
+    userauth.register("alice", "hunter22", "shared@x.com")
+    with pytest.raises(userauth.AuthError):
+        userauth.register("bob", "hunter22", "shared@x.com")     # duplicate email rejected
+    with pytest.raises(userauth.AuthError):
+        userauth.register("carol", "hunter22", "SHARED@x.com")   # case-insensitive
+    userauth.register("bob", "hunter22", "bob@x.com")            # a distinct email is fine
+    # empty email may repeat (freed test accounts after cleanup)
+    userauth.register("e1", "hunter22", "")
+    userauth.register("e2", "hunter22", "")
+    assert userauth.get_email("e1") == "" and userauth.get_email("e2") == ""
+    # recovery: unverified email still resolves, but is gated out by is_email_verified
+    assert userauth.find_by_email("shared@x.com") == "alice"
+    assert userauth.is_email_verified("alice") is False
+    userauth.set_email_verified("alice")
+    assert userauth.is_email_verified("alice") is True
+
+
 def test_token_roundtrip_and_tamper(tmp_path, monkeypatch):
     monkeypatch.setattr(userauth, "USERS_FILE", tmp_path / "users.json")
     monkeypatch.setattr(userauth, "_secret", lambda: b"test-secret")
