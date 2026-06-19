@@ -662,7 +662,12 @@ class Session:
                 tick += 1
                 if tick % 5 == 0:  # ~every 2s
                     pane = await asyncio.get_event_loop().run_in_executor(None, self._pane)
-                    busy = self._is_busy(pane)
+                    # "busy" = claude is mid-turn OR we still have user input queued/in-delivery.
+                    # Including _inq keeps the Thinking indicator honest across the server-side input
+                    # queue: it stays on while a message waits for an idle prompt, and only the
+                    # genuinely-idle + empty-queue state clears it (soft 'done' below) — so a queued
+                    # message can't leave Thinking hanging with no matching turn.
+                    busy = self._is_busy(pane) or bool(self._inq)
                     if busy:
                         idle_streak = 0
                         self._await_done = True
