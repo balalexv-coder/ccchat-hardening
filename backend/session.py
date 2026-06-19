@@ -46,6 +46,8 @@ class Session:
         self._block_reason = None  # last surfaced blocking state (auth / rate_limit / workspace_trust)
         self._subscribers = set()
         self._alive = True
+        self._inq = []             # pending user inputs; delivered one-at-a-time at an idle prompt
+        self._drainer = None       # background task draining _inq (never type into a mid-turn pane)
         self.on_compact = None     # async callback set by app: re-send wiki after a compaction
         self.on_notify = None      # sync callback set by app: fire a push notification on
                                    # done / blocked / choice (server-side, so it works when the
@@ -100,6 +102,53 @@ class Session:
             await asyncio.sleep(0.4)
 
     async def send_text(self, text: str):
+        """Public entry for a user message. Does NOT type immediately — it ENQUEUES the message; a
+        background drainer delivers it once claude is at an idle prompt. Typing into a live (mid-turn)
+        pane silently drops the input (the 'swallowed message' bug). Returns at once so the ws reader
+        stays free for stop/ping."""
+        self.enqueue_input(text)
+
+    def enqueue_input(self, text: str):
+        self._inq.append(text)
+        if self._drainer is None or self._drainer.done():
+            self._drainer = asyncio.create_task(self._drain_inputs())
+
+    async def _drain_inputs(self):
+        """Deliver queued messages one at a time, each only when claude is idle, in FIFO order."""
+        import logging
+        while self._inq and self._alive:
+            text = self._inq[0]
+            try:
+                await self._wait_ready()
+                await self._wait_idle()
+                await self._do_send(text)
+            except Exception:
+                logging.getLogger("uvicorn.error").exception("[drain %s] send failed", self.container)
+            if self._inq:
+                self._inq.pop(0)
+            await asyncio.sleep(0.3)   # let claude register busy before delivering the next one
+
+    async def _wait_idle(self, timeout: float = 900.0):
+        """Block until claude is at an idle prompt (no 'esc to interrupt'). Returns immediately if
+        already idle (no added latency for the common case); if a turn is running, polls until it
+        ends, with a double-confirm to ride out the brief flicker between tool calls."""
+        loop = asyncio.get_event_loop()
+        waited = 0.0
+        saw_busy = False
+        while waited < timeout:
+            pane = await loop.run_in_executor(None, self._pane)
+            if self._is_busy(pane):
+                saw_busy = True
+                await asyncio.sleep(0.5); waited += 0.5
+                continue
+            if saw_busy:                  # just went idle after a turn — confirm it isn't a flicker
+                await asyncio.sleep(0.6); waited += 0.6
+                pane2 = await loop.run_in_executor(None, self._pane)
+                if self._is_busy(pane2):
+                    continue
+            return
+
+    async def _do_send(self, text: str):
         # tmux send-keys: send the literal text, then a separate Enter so it submits.
         await self._wait_ready()
         loop = asyncio.get_event_loop()
