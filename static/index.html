@@ -1635,7 +1635,7 @@ const act=$('activity'), actWhat=act.querySelector('.what'), actTimer=act.queryS
 let actStart=0, actInt=null;
 function fmtElapsed(s){const m=Math.floor(s/60);return (m? m+':' : '0:')+String(s%60).padStart(2,'0')}
 function busyStart(what,noTimer){
-  actWhat.textContent=what||'Thinking…';
+  actWhat.textContent='Thinking…';   // always just "Thinking" — pill = console busy, nothing more
   act.style.display='flex'; clearInterval(actInt); actInt=null;
   if(noTimer){
     // we don't know when this turn started (reconnected to an already-busy session) — show "…"
@@ -1668,9 +1668,6 @@ function renderTodos(items){
              '<span class="tc">'+esc(t.content||t.activeForm||'')+'</span></div>';}).join('');
   const anchor=$('activity');
   if(todoEl.nextSibling!==anchor || todoEl.parentNode!==log){ log.insertBefore(todoEl,anchor); }
-  // drive the activity phrase from the in-progress item's gerund (e.g. "Deploying, verifying…")
-  const ip=items.find(t=>t.status==='in_progress');
-  if(ip) busyShow((ip.activeForm||ip.content||'Working')+'…');
   scroll();
 }
 actStop.onclick=()=>{ if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:'stop'})); busyWhat('Stopping…'); };
@@ -1734,20 +1731,19 @@ function handle(ev){switch(ev.kind){
   case 'ready':status.textContent='online';_replaying=false;loadCommands();flushQueue();break;
   case 'busy':_busy=true;_turnDone=false;if(!_replaying)busyStart(ev.what,ev.ongoing);break;
   case 'container':if(cur){statusMap[cur.id]=ev.status;renderSessions();updatePower()}break;
-  // soft (pane-watchdog) done is advisory — just hide the pill; later activity may re-show it.
-  // A real done (JSONL turn_duration) is the turn end: mark it so busyShow won't resurrect the pill.
-  case 'done':busyStop();if(ev.soft){_busy=false;break;}_busy=false;_turnDone=true;if(!_replaying){loadCommands();flushQueue();chime();}break;
+  // 'done' = the console went idle (server pane watchdog, single source of truth). Hide the pill.
+  case 'done':busyStop();_busy=false;_turnDone=true;if(!_replaying){loadCommands();flushQueue();chime();}break;
   case 'wiki':wikiChip(ev);break;
   case 'choice':
     if(ev.from_ask){ choiceButtons(ev); }              // ```ask: in-transcript; 'done' handles busy/chime
     else { busyStop(); choiceButtons(ev); if(!_replaying) chime(); }   // live tmux widget — awaiting your click
     break;
   case 'user':userBubble(ev.text, ev.ts);break;
-  case 'assistant':busyShow('Thinking…');assistantBubble(ev.text, ev.ts);break;
-  case 'thinking':busyShow('Reasoning…');thinking(ev.text);break;
+  case 'assistant':assistantBubble(ev.text, ev.ts);break;
+  case 'thinking':thinking(ev.text);break;
   case 'todos':renderTodos(ev.items);break;
-  case 'tool_use':busyShow((toolVerb[ev.name]||ev.name||'Working')+'…');tool(ev.name,ev.text);break;
-  case 'tool_result':busyShow('Thinking…');toolresult(ev.text);break;
+  case 'tool_use':tool(ev.name,ev.text);break;
+  case 'tool_result':toolresult(ev.text);break;
   case 'info':busyStop();{const d=document.createElement('div');d.className='msg wikichip';d.textContent='ℹ '+ev.text;place(d);scroll()}break;
   case 'error':busyStop();bubble('assistant','⚠ '+ev.text);break;
 }}

@@ -846,6 +846,7 @@ async def ws(websocket: WebSocket, sid: str):
                         # bring the container up if it was stopped, then send
                         if await _to_thread(mgr.status, s.sess) != "running":
                             await websocket.send_json({"kind": "busy", "what": "Starting container…"})
+                            s._pill_on = True
                             await _ensure_up(email, sid)
                             await websocket.send_json({"kind": "container", "status": "running"})
                             await s.send_text(text)
@@ -853,21 +854,25 @@ async def ws(websocket: WebSocket, sid: str):
                             # read-only overlay (not in JSONL) — scrape from pane, show, dismiss.
                             await _to_thread(mgr.reseed_creds, s.sess, only_if_stale=True)
                             await websocket.send_json({"kind": "busy", "what": "Opening…"})
+                            s._pill_on = True
                             body = await s.run_tui_command(text)
                             await websocket.send_json({"kind": "assistant",
                                 "text": f"```\n{body}\n```" if body else f"{cmd}: (no output)"})
                             await websocket.send_json({"kind": "done"})
+                            s._pill_on = False
                         elif cmd in INTERACTIVE_COMMANDS:
                             # interactive/state-changing — can't be driven from the pretty UI safely
                             await s.interrupt()   # ensure no half-open dialog eats the next message
                             await websocket.send_json({"kind": "info",
                                 "text": f"{cmd} — interactive command, available in console mode (⌨ button in the header)."})
                             await websocket.send_json({"kind": "done"})
+                            s._pill_on = False
                         else:
                             # refresh the session's OAuth token from the live seed if it went stale
                             # mid-session (claude re-reads the file per request → no restart needed)
                             await _to_thread(mgr.reseed_creds, s.sess, only_if_stale=True)
                             await websocket.send_json({"kind": "busy"})
+                            s._pill_on = True
                             await s.send_text(text)
                 elif msg.get("type") == "active":
                     # foreground heartbeat: THIS device is watching this session right now. Carries

@@ -85,9 +85,11 @@ def test_choice_from_pane_dedups():
 
 # ---------- _parse_line ----------
 
-def test_parse_line_turn_duration_is_done():
+def test_parse_line_turn_duration_emits_nothing():
+    # The Thinking pill is driven solely by the pump's pane watchdog now; turn_duration no longer
+    # emits its own 'done' (that would be a second, competing source).
     s = make_session()
-    assert s._parse_line({"type": "system", "subtype": "turn_duration"}) == {"kind": "done"}
+    assert s._parse_line({"type": "system", "subtype": "turn_duration"}) is None
 
 
 def test_parse_line_user_text():

@@ -48,6 +48,7 @@ class Session:
         self._alive = True
         self._inq = []             # pending user inputs; delivered one-at-a-time at an idle prompt
         self._drainer = None       # background task draining _inq (never type into a mid-turn pane)
+        self._pill_on = False      # client "Thinking" pill state (pane-driven; set by any busy emit)
         self.on_compact = None     # async callback set by app: re-send wiki after a compaction
         self.on_notify = None      # sync callback set by app: fire a push notification on
                                    # done / blocked / choice (server-side, so it works when the
@@ -354,8 +355,7 @@ class Session:
         if t == "system" and d.get("subtype") == "turn_duration":
             if self._hide_next_assistant:
                 self._hide_next_assistant = False   # end of the hidden wiki-answer turn
-                return None
-            return {"kind": "done"}        # claude finished this turn
+            return None        # pill is driven solely by the pump's pane watchdog (single source)
         if t == "user" and role == "user":
             if isinstance(cont, str):
                 s = cont.strip()
@@ -662,27 +662,26 @@ class Session:
                 tick += 1
                 if tick % 5 == 0:  # ~every 2s
                     pane = await asyncio.get_event_loop().run_in_executor(None, self._pane)
-                    # Indicator follows claude's REAL pane state only. (Do NOT also count queued input
-                    # as busy: in a fast back-and-forth there's almost always a message queued or a
-                    # turn running, which made Thinking appear stuck "constantly". The queue still
-                    # delivers reliably; the pill just reflects actual activity.)
+                    # SINGLE SOURCE OF TRUTH for the "Thinking" pill: claude's real pane state. The pill
+                    # is ON whenever the console is busy ("esc to interrupt" present) and OFF once it's
+                    # idle — nothing else (no per-event statuses, no JSONL/queue heuristics). `_pill_on`
+                    # tracks the client pill (any busy emit, incl. app.py's, sets it), so it ALWAYS
+                    # clears once idle, and self-heals (a missed/false read is corrected next poll).
                     busy = self._is_busy(pane)
                     if busy:
                         idle_streak = 0
-                        self._await_done = True
-                        if not prev_busy:
+                        if not self._pill_on:
+                            self._pill_on = True
                             for q in list(self._subscribers):
                                 q.put_nowait({"kind": "busy"})
                     else:
                         idle_streak += 1
-                        if idle_streak >= 4 and self._await_done:
-                            self._await_done = False
-                            # soft=advisory: the authoritative turn end is the JSONL turn_duration
-                            # 'done'. This pane-based one only hides the pill (the client re-shows it
-                            # on any later activity), so a flaky "esc to interrupt" read can't end a
-                            # live turn. The push still fires from here (turn_duration doesn't notify).
+                        # 2 consecutive idle polls (~4s) so the brief disappearance of the
+                        # "esc to interrupt" hint mid-turn can't end the pill early.
+                        if self._pill_on and idle_streak >= 2:
+                            self._pill_on = False
                             for q in list(self._subscribers):
-                                q.put_nowait({"kind": "done", "soft": True})
+                                q.put_nowait({"kind": "done"})
                             self._fire_notify({"kind": "done"})   # "task finished" push
                     prev_busy = busy
                     # surface a blocking state (auth / rate-limit / workspace-trust) so the UI shows
