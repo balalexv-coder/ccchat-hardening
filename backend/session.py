@@ -643,8 +643,12 @@ class Session:
             return ""
 
     def _is_busy(self, pane: str) -> bool:
-        # claude shows an interrupt hint / spinner while working; absence => idle prompt
-        return ("esc to interrupt" in pane.lower()) or ("(esc to" in pane.lower())
+        # Busy iff the live status FOOTER shows the "esc to interrupt" hint. Check ONLY the last
+        # couple of lines (the footer/border) — scanning the whole pane false-positives on message
+        # SCROLLBACK that literally contains "esc to interrupt" (e.g. a chat about this very UI),
+        # which would pin the Thinking indicator on forever. The footer is always the last line.
+        tail = "\n".join(pane.rstrip().splitlines()[-2:]).lower()
+        return "esc to interrupt" in tail
 
     async def pump(self):
         import logging

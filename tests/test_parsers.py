@@ -85,6 +85,17 @@ def test_choice_from_pane_dedups():
 
 # ---------- _parse_line ----------
 
+def test_is_busy_checks_footer_not_scrollback():
+    s = make_session()
+    footer_idle = "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+    footer_busy = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ctrl+t"
+    sep = "\n" + "─" * 40 + "\n❯ \n" + "─" * 40 + "\n"
+    # scrollback literally mentions the hint (e.g. a chat about the UI) — must NOT read as busy
+    scroll = "we kept writing esc to interrupt in the chat\nmore lines\n"
+    assert s._is_busy(scroll + sep + footer_idle) is False
+    assert s._is_busy(scroll + sep + footer_busy) is True
+
+
 def test_parse_line_turn_duration_emits_nothing():
     # The Thinking pill is driven solely by the pump's pane watchdog now; turn_duration no longer
     # emits its own 'done' (that would be a second, competing source).
