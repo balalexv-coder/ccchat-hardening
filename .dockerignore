@@ -1,0 +1,19 @@
+# Keep the build context small and free of secrets / runtime data.
+# (tests/ + conftest.py are intentionally INCLUDED — the deploy runs pytest inside the image.)
+.git
+.github
+**/.chome/
+**/.credentials.json
+work/
+state/
+seed-chome/
+*.log
+*.pem
+*_ed25519
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+*.bak
+*.bak-*
+*.bak.*

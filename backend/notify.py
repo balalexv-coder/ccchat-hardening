@@ -33,7 +33,7 @@ _PRIV = VAPID_DIR / "private.pem"
 # contact address embedded in the VAPID JWT (push services may use it to reach the operator).
 # MUST be a routable mailto:/https: — Apple's push service rejects non-real domains (e.g. a
 # `.local` TLD) with 403 BadJwtToken, which silently kills delivery to iOS.
-_SUB = os.environ.get("CCCHAT_VAPID_SUB", "mailto:admin@balalexv.tech")
+_SUB = os.environ.get("CCCHAT_VAPID_SUB", "mailto:admin@example.com")
 
 _lock = threading.Lock()
 _cache: dict = {}

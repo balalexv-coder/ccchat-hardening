@@ -166,6 +166,9 @@ def _rate_ok(key: str, limit: int, window: int) -> bool:
         return False
     q.append(now)
     _rl[key] = q
+    if len(_rl) > 4096:                       # bound memory: drop keys whose window has emptied
+        for k in [k for k, v in list(_rl.items()) if not any(now - t < window for t in v)]:
+            _rl.pop(k, None)
     return True
 
 

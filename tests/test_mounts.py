@@ -24,6 +24,20 @@ def test_validate_sanitizes_and_drops_invalid():
     assert md["read_only"] is True and md["admin_only"] is False and md["dest"] == "/mydata"
 
 
+def test_validate_blocks_docker_socket_even_with_leading_double_slash():
+    # The denylist must catch the docker socket even when POSIX preserves a leading "//"
+    # (os.path.normpath does NOT collapse it) — otherwise it would slip through as a writable,
+    # non-admin mount = host escape. Regression test for that bypass.
+    out = ms.validate([
+        {"name": "ok", "path": "/srv/data"},
+        {"name": "sock1", "path": "/var/run/docker.sock", "admin_only": False, "read_only": False},
+        {"name": "sock2", "path": "//var/run/docker.sock", "admin_only": False, "read_only": False},
+        {"name": "sock3", "path": "/run/docker.sock"},
+        {"name": "rootfs", "path": "/"},
+    ])
+    assert [m["name"] for m in out] == ["ok"]   # every docker.sock / root variant dropped
+
+
 def test_expand_path_aliases():
     wr = "/root/ccchat/work"
     assert ms.expand_path("@workspace", "alice", wr) == wr

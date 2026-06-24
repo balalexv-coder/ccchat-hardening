@@ -1,7 +1,7 @@
 {
-  "name": "ccchat",
-  "short_name": "ccchat",
-  "description": "Pretty chat over interactive Claude",
+  "name": "Vivarium",
+  "short_name": "Vivarium",
+  "description": "Self-hosted web orchestrator for Claude Code",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -31,7 +31,7 @@ def send(to: str, subject: str, html: str) -> tuple:
         # A real User-Agent is required: Resend is behind Cloudflare, which blocks the default
         # "Python-urllib/x" signature with HTTP 403 "error code: 1010".
         headers={"Authorization": "Bearer " + API_KEY, "Content-Type": "application/json",
-                 "User-Agent": "ccchat/1.0 (+https://chat.balalexv.tech)"},
+                 "User-Agent": "vivarium/1.0 (+https://github.com/balalexv-coder/ccchat-hardening)"},
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:

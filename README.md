@@ -31,7 +31,7 @@ agent lives and works behind glass, while you watch and steer through the web UI
   with a denylist that blocks sensitive paths.
 - **Optional integrations.** One-click VS Code Remote-SSH deep links, voice input
   via an external whisper-stt service (browser Web Speech API fallback), an egress
-  proxy for network-restricted sessions, and a small MCP server for UI actions.
+  proxy for network-restricted sessions.
 
 ## Architecture
 

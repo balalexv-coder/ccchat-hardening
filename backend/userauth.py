@@ -3,7 +3,7 @@
 CF Access (if present) is an optional coarse outer gate, but the origin is now reachable directly,
 so WHO you are inside the app is determined solely by a username/password account here. Open
 registration: anyone can create an account, but new accounts are unapproved until an admin approves
-them (Settings → Users). No email, so there is no password recovery.
+them (Settings → Users). Accounts carry a verified email used for self-service password recovery (see mailer.py).
 
 Storage: /state/users.json  -> { "<username>": {"salt": hex, "hash": hex, "created": ts,
                                                  "approved": bool, "password_changed": ts} }

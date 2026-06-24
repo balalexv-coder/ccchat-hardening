@@ -106,6 +106,7 @@ def validate(items) -> list:
         # Apply the host-path policy to literal absolute paths (aliases expand to user workspaces).
         if path.startswith("/"):
             norm = os.path.normpath(path)
+            norm = re.sub(r"/{2,}", "/", norm)   # collapse a leading "//" (POSIX keeps it) so the denylist can't be bypassed
             if _under(norm, _DENY):
                 continue                      # never allowed as a bind source
             if _under(norm, _SENSITIVE):
