@@ -43,6 +43,7 @@ class Session:
         self.jsonl_path = None
         self._jsonl_pos = 0
         self._pos_by_file = {}     # path -> bytes already consumed, so a resumed session is not replayed (#8)
+        self._lastts_cache = {}    # path -> ((size, mtime), last_event_ts): cache for _current_jsonl
         self._block_reason = None  # last surfaced blocking state (auth / rate_limit / workspace_trust)
         self._subscribers = set()
         self._alive = True
@@ -187,6 +188,8 @@ class Session:
         `text` is the current wiki content; we only use it to decide whether a wiki exists. The read
         turn is hidden from the chat (shown as a 'wiki loaded' chip) via _wiki_norm matching."""
         if text and text.strip():
+            import logging
+            logging.getLogger("uvicorn.error").info("[wiki-send %s] typing WIKI_LOAD_CMD", self.container)
             self._wiki_norm = WIKI_LOAD_CMD.replace("\n", " ").strip()
             self._hide_next_assistant = False
             self._wiki_tokens_sent = False
@@ -264,10 +267,54 @@ class Session:
         self._bg_tasks.add(t)
         t.add_done_callback(self._bg_tasks.discard)
 
+    def _last_event_ts(self, path: str) -> float:
+        """Epoch seconds of the LAST event actually written inside `path` (its last line's
+        `timestamp`). Cached per (size, mtime) so unchanged files are only stat'd. This is what
+        identifies the active transcript by real content recency — see _current_jsonl."""
+        try:
+            st = os.stat(path)
+        except OSError:
+            return 0.0
+        key = (st.st_size, st.st_mtime)
+        hit = self._lastts_cache.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        from datetime import datetime
+        ts = 0.0
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 65536))     # last line lives in the tail; avoid reading 46MB
+                tail = f.read().decode("utf-8", "ignore")
+            for line in reversed(tail.splitlines()):
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    t = json.loads(line).get("timestamp")
+                except json.JSONDecodeError:
+                    continue
+                if t:
+                    ts = datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+                    break
+        except OSError:
+            ts = 0.0
+        if not ts:                # empty/partial file (e.g. a just-created one) -> fall back to mtime
+            ts = st.st_mtime
+        self._lastts_cache[path] = (key, ts)
+        return ts
+
     def _current_jsonl(self):
-        files = sorted(glob.glob(str(self.proj_dir / "*.jsonl")),
-                       key=lambda p: os.path.getmtime(p))
-        return files[-1] if files else None
+        """The session's ACTIVE transcript = the file with the most recent event INSIDE it, NOT the
+        newest file mtime. A stale transcript that gets touched/synced (mtime bumped with no new
+        content) keeps its old last-event time, so it can no longer hijack the active pointer and
+        fire a bogus compaction/wiki re-load — which used to re-read the whole wiki and stack it
+        into the context window N times (Messages bloated to several copies of wiki.md)."""
+        files = glob.glob(str(self.proj_dir / "*.jsonl"))
+        if not files:
+            return None
+        return max(files, key=self._last_event_ts)
 
     _TASK_STATUSES = {"pending", "in_progress", "completed"}
 
@@ -730,8 +777,16 @@ class Session:
                         # the wiki so it survives the wipe (like after a compaction). _switch_jsonl
                         # resumes a previously-tailed file where we left off instead of replaying it (#8).
                         had_prev = self.jsonl_path is not None
+                        old_path = self.jsonl_path
                         self._switch_jsonl(path)
                         if had_prev:
+                            logging.getLogger("uvicorn.error").info(
+                                "[wiki-switch %s] active transcript %s -> %s "
+                                "(last-event old=%.0f new=%.0f) -> re-sending wiki",
+                                self.container,
+                                Path(old_path).name if old_path else None, Path(path).name,
+                                self._last_event_ts(old_path) if old_path else 0.0,
+                                self._last_event_ts(path))
                             self._fire_compact()
                     try:
                         with open(path, "rb") as f:
@@ -748,6 +803,9 @@ class Session:
                                 # detect a compaction boundary -> re-send wiki
                                 if (d.get("type") == "system"
                                         and d.get("subtype") in ("compact_boundary", "compaction")):
+                                    logging.getLogger("uvicorn.error").info(
+                                        "[wiki-compact %s] %s in %s -> re-sending wiki",
+                                        self.container, d.get("subtype"), Path(path).name)
                                     self._fire_compact()
                                 # emit the current context size from each assistant turn's usage
                                 # (input + cache read + cache create = what's in the context window)
