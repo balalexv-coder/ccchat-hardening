@@ -741,13 +741,11 @@ def _live(email: str, sid: str) -> Session:
     if s is None:
         s = Session(sess, mgr.local_ws(sess), wiki=mgr.wiki_text(sess))
         s.start()
-        # after a compaction, re-send the wiki so it survives the summary (Firefly-style)
-        async def _resend_wiki():
-            wiki = mgr.wiki_text(sess)
-            if wiki:
-                await asyncio.sleep(2)  # let the compaction settle
-                await s.send_wiki(wiki)
-        s.on_compact = _resend_wiki
+        # The wiki is kept in context DETERMINISTICALLY by a Claude Code SessionStart hook
+        # (settings.json — see manager._ensure_wiki_hook): its stdout is injected on every session
+        # start AND after every compaction (source "compact"), so there is no on_compact re-send.
+        # The old approach typed a "READ the wiki" instruction the model could skip/fake, and the
+        # content lived in Messages so it was lost on each compaction.
         s.on_notify = _session_notify   # fire push on done/blocked/choice (works with the tab closed)
         LIVE[sid] = s
     # Start the transcript pump only when there's a running event loop. _live() is called from

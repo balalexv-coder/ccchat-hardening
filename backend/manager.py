@@ -881,6 +881,7 @@ class Manager:
         Also auto-dismisses the one-time Bypass-Permissions confirm screen so it doesn't eat msg #1.
         """
         c = sess["container"]
+        self._ensure_wiki_hook(sess)    # keep the SessionStart wiki hook current; applies on next launch
         has = _docker("exec", c, "tmux", "has-session", "-t", "main")
         if has.returncode == 0:
             _docker("exec", c, "tmux", "set", "-g", "mouse", "on")   # idempotent: also fix existing sessions
@@ -941,17 +942,36 @@ class Manager:
             if "esc to interrupt" in txt.lower() or 'Try "' in txt or "shortcuts" in txt:
                 break
             time.sleep(0.8)
-        # auto-load the wiki as the very first message. We don't paste wiki.md's content (it fails
-        # silently for files >~128 KB — a single tmux send-keys argument hits MAX_ARG_STRLEN/E2BIG);
-        # instead we send a short instruction telling claude to READ the mounted file itself (plain
-        # file I/O, no argv limit → any size loads). Not shown in chat; UI renders a "wiki loaded"
-        # chip. WIKI_LOAD_CMD is shared with session.send_wiki so the hide-matching stays in sync.
-        wiki = self.wiki_text(sess)
-        if wiki and wiki.strip():
-            time.sleep(1.0)
-            _docker("exec", c, "tmux", "send-keys", "-t", "main", "-l", WIKI_LOAD_CMD.replace("\n", " "))
-            time.sleep(0.2)
-            _docker("exec", c, "tmux", "send-keys", "-t", "main", "Enter")
+        # The wiki is NOT typed in as a message any more — _ensure_wiki_hook (called above) installs a
+        # Claude Code SessionStart hook that cats wiki.md into context deterministically on startup and
+        # after every compaction. Reliable (model can't skip/fake it) and survives compaction natively.
+
+    def _ensure_wiki_hook(self, sess: dict):
+        """Keep the durable wiki in the model's context via a Claude Code SessionStart hook in the
+        session's settings.json. The hook is a shell command that cats /workspace/.context/wiki.md;
+        Claude injects the command's stdout into context on every session start AND after every
+        compaction (SessionStart fires with source 'compact'). This replaces the old "type a READ
+        instruction and hope the model reads it" path — which the model could skip/fake and which was
+        lost on each compaction (it lived in Messages). Idempotent: merges into settings.json, keeping
+        effortLevel etc.; ccchat owns the SessionStart hook. Takes effect on the next claude launch."""
+        sj = self.local_ws(sess) / ".chome" / "settings.json"
+        try:
+            data = json.loads(sj.read_text(encoding="utf-8")) if sj.exists() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        cmd = ("if [ -s /workspace/.context/wiki.md ]; then "
+               "printf '%s\\n\\n' '# Durable wiki / scratchpad (/workspace/.context/wiki.md):'; "
+               "cat /workspace/.context/wiki.md; fi")
+        hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+        hooks["SessionStart"] = [{"hooks": [{"type": "command", "command": cmd}]}]
+        data["hooks"] = hooks
+        try:
+            sj.parent.mkdir(parents=True, exist_ok=True)
+            sj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def rename(self, email: str, sid: str, name: str):
         return self.update(email, sid, name=name)
