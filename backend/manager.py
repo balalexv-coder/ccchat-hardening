@@ -900,6 +900,13 @@ class Manager:
         # skip the first-run wizard (theme → login → OAuth) which otherwise blocks msg #1
         cfg["hasCompletedOnboarding"] = True
         cfg.setdefault("theme", "dark")
+        # Default MCP servers, user-scoped so they load on every (re)launch WITHOUT the project-MCP
+        # approval dialog (which would otherwise eat msg #1). Context7 = up-to-date library docs in
+        # context. setdefault per server so a user-added/edited entry (e.g. with a CONTEXT7_API_KEY
+        # in env for higher rate limits) is never clobbered. .claude.json is gitignored, so a key
+        # placed here is not committed.
+        cfg.setdefault("mcpServers", {}).setdefault(
+            "context7", {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]})
         cj.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         # warm up auth now (no interactive claude running yet) so msg #1 never races the token refresh
         self._warm_auth(sess)
