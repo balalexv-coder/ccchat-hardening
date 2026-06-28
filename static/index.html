@@ -15,6 +15,9 @@
 <script src="/lib/marked.min.js"></script>
 <script src="/lib/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <style>
   :root, body[data-theme="warm"]{
     /* Warm — Claude Code dark (default) */
@@ -1171,6 +1174,13 @@ function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'
 function mdSafe(s){ const html=(window.marked?marked.parse(String(s==null?'':s)):esc(s));
   return window.DOMPurify?DOMPurify.sanitize(html):esc(s); }
 function svgSafe(svg){ return window.DOMPurify?DOMPurify.sanitize(svg,{USE_PROFILES:{svg:true,svgFilters:true,html:true}}):'' }
+// Render LaTeX math (KaTeX auto-render) on an already-sanitized DOM node. Runs AFTER mdSafe/DOMPurify
+// on the live node; KaTeX emits escaped spans/MathML (no script, trust off) so it's XSS-safe. Code
+// blocks are ignored so `$` inside code isn't mathified.
+const KATEX_OPTS={delimiters:[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},
+  {left:'\\(',right:'\\)',display:false},{left:'$',right:'$',display:false}],
+  throwOnError:false,ignoredTags:['script','noscript','style','textarea','pre','code']};
+function renderMath(node){ if(window.renderMathInElement){ try{renderMathInElement(node,KATEX_OPTS)}catch(e){} } }
 function mountRow(m){
   m=m||{name:'',path:'',description:'',admin_only:false};
   const d=document.createElement('div'); d.className='mrow';
@@ -1475,7 +1485,7 @@ function userBubble(text, ts){
   // if the body references an image path, render markdown (so it shows as a preview); else plain text.
   if(window.marked && IMG_RE.test(body)){
     IMG_RE.lastIndex=0;
-    d=document.createElement('div'); d.className='msg user md'; d.innerHTML=mdSafe(imgify(body));
+    d=document.createElement('div'); d.className='msg user md'; d.innerHTML=mdSafe(imgify(body)); renderMath(d);
   } else {
     d=document.createElement('div'); d.className='msg user'; d.textContent=body;
   }
@@ -1526,6 +1536,7 @@ function assistantBubble(text, ts){
       if(p.md!==undefined&&p.md.trim()){const s=document.createElement('div');s.innerHTML=mdSafe(imgify(p.md));d.appendChild(s)}
       if(p.mer!==undefined&&p.mer){d.appendChild(mermaidCard(p.mer))}
     }
+    renderMath(d);
   }else{d.textContent=text;d.classList.remove('md')}
   place(d);scroll();return decorate(d,'assistant',text,ts);
 }
