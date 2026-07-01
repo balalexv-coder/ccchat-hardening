@@ -7,6 +7,24 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ccchat">
+<script>
+/* iOS/standalone-PWA fix: 100dvh can "stick" after the soft keyboard opens/closes, leaving a black
+   void below the composer. Track the real visible height via visualViewport and drive body height
+   from it (see body{height:var(--app-h,...)}). */
+(function(){
+  var vv = window.visualViewport;
+  function setH(){
+    var h = (vv && vv.height) || window.innerHeight;
+    if (h) document.documentElement.style.setProperty('--app-h', h + 'px');
+  }
+  setH();
+  window.addEventListener('resize', setH);
+  window.addEventListener('orientationchange', function(){ setTimeout(setH, 200); });
+  if (vv){ vv.addEventListener('resize', setH); vv.addEventListener('scroll', setH); }
+  document.addEventListener('focusout', function(){ setTimeout(setH, 100); });
+  document.addEventListener('DOMContentLoaded', setH);
+})();
+</script>
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="manifest" href="/manifest.json">
@@ -76,7 +94,7 @@
   *::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px;border:2px solid transparent;background-clip:content-box}
   *::-webkit-scrollbar-thumb:hover{background:var(--muted);border:2px solid transparent;background-clip:content-box}
   *::-webkit-scrollbar-corner{background:transparent}
-  body{background:var(--bg);color:var(--txt);font-family:system-ui,sans-serif;height:100dvh;display:flex;overflow:hidden}
+  body{background:var(--bg);color:var(--txt);font-family:system-ui,sans-serif;height:100dvh;height:var(--app-h,100dvh);display:flex;overflow:hidden}
 
   /* sidebar (desktop) / drawer (mobile) */
   #sidebar{width:260px;min-width:260px;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;z-index:20;transition:width .18s,min-width .18s}
