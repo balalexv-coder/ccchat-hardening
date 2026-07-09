@@ -503,6 +503,8 @@
                padding:0 2px;transition:opacity .12s,color .12s}
   .msg:hover .msgact{opacity:.7}
   .msg .msgact:hover{opacity:1;color:var(--accent)}
+  .msg .msgact svg{width:14px;height:14px;display:block}
+  .msg .msgact.ok{opacity:1;color:#3fb56b}
   .msg .msgtime{opacity:.65;font-variant-numeric:tabular-nums}
   /* reply/quote banner above the composer */
   #replyBar{display:flex;align-items:center;gap:8px;padding:6px 10px;margin:0 10px;
@@ -1416,16 +1418,51 @@ function fmtTime(ts){
   if(d.toDateString()===now.toDateString()) return hm;                    // today -> time only
   return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' '+hm;  // else date + time
 }
-// add the footer (time + ↩ reply button) and remember the message text/role for replying/quoting
+// copy helper: clipboard API when available (secure context), else off-screen textarea fallback.
+// NOTE: the fallback textarea must be positioned off-screen, NOT display:none — .select() no-ops
+// on non-rendered elements in most browsers.
+function copyMsgText(text, btn){
+  const done=()=>{
+    if(btn._t) clearTimeout(btn._t);
+    btn.classList.add('ok'); btn.replaceChildren(document.createTextNode('✓'));
+    btn._t=setTimeout(()=>{ btn.replaceChildren(btn._svg); btn.classList.remove('ok'); btn._t=null; },1200);
+  };
+  const fallback=()=>{ try{
+    const ta=document.createElement('textarea'); ta.value=text;
+    ta.style.position='fixed'; ta.style.left='-9999px'; ta.style.top='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok=document.execCommand('copy'); document.body.removeChild(ta);
+    if(ok) done();
+  }catch(e){} };
+  if(navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
+}
+// classic "copy" glyph (two rounded rects), built via DOM APIs — no innerHTML for SVG by convention
+function copyIcon(){
+  const NS='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(NS,'svg');
+  svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('fill','none');
+  svg.setAttribute('stroke','currentColor'); svg.setAttribute('stroke-width','2');
+  svg.setAttribute('stroke-linecap','round'); svg.setAttribute('stroke-linejoin','round');
+  const r=document.createElementNS(NS,'rect');
+  r.setAttribute('x','9'); r.setAttribute('y','9'); r.setAttribute('width','13'); r.setAttribute('height','13'); r.setAttribute('rx','2');
+  const p=document.createElementNS(NS,'path');
+  p.setAttribute('d','M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1');
+  svg.append(r,p); return svg;
+}
+// add the footer (copy + time + ↩ reply button) and remember the message text/role for replying/quoting
 function decorate(el, role, text, ts){
   el._msgText=text; el._msgRole=role; el._msgTs=ts||'';
   if(ts) el.dataset.ts=ts;             // so a reply card can scroll back to this exact message
   el.dataset.role=role;
   const meta=document.createElement('div'); meta.className='msgmeta';
+  const cb=document.createElement('button'); cb.type='button'; cb.className='msgact copybtn'; cb.title='Скопировать';
+  cb._svg=copyIcon(); cb.appendChild(cb._svg);
+  cb.onclick=ev=>{ ev.stopPropagation(); copyMsgText(el._msgText||'', cb); };
   const rb=document.createElement('button'); rb.type='button'; rb.className='msgact'; rb.textContent='↩'; rb.title='Ответить';
   rb.onclick=ev=>{ ev.stopPropagation(); setReply({text:el._msgText, role:el._msgRole, ts:el._msgTs, partial:false}); };
   const tm=document.createElement('span'); tm.className='msgtime'; tm.textContent=fmtTime(ts);
-  meta.append(rb,tm); el.appendChild(meta);
+  meta.append(cb,rb,tm); el.appendChild(meta);
   return el;
 }
 // The reply/quote reference is sent as a structured ```reply block (JSON: role/ts/text) so the UI can
