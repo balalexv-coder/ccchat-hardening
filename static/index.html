@@ -45,17 +45,23 @@
     }
     maybeRestore();
   }
+  // iOS keeps panning AFTER the last vv event of the keyboard animation (measured on-device:
+  // the anchor applied a mid-animation pageTop and a ~180pt gap remained). Re-sync on a short
+  // rAF loop after every trigger so the final settle is always caught.
+  var syncUntil = 0;
+  function syncLoop(){ setH(); if (performance.now() < syncUntil) requestAnimationFrame(syncLoop); }
+  function kick(ms){ syncUntil = Math.max(syncUntil, performance.now() + (ms || 1200)); requestAnimationFrame(syncLoop); }
   setH();
-  window.addEventListener('resize', setH);
-  window.addEventListener('orientationchange', function(){ setTimeout(setH, 200); });
-  if (vv){ vv.addEventListener('resize', setH); vv.addEventListener('scroll', setH); }
+  window.addEventListener('resize', function(){ kick(); });
+  window.addEventListener('orientationchange', function(){ kick(1500); });
+  if (vv){ vv.addEventListener('resize', function(){ kick(); }); vv.addEventListener('scroll', function(){ kick(); }); }
+  document.addEventListener('focusin', function(){ if (restoreT){ clearTimeout(restoreT); restoreT = null; } kick(); });
   // focusout fires BEFORE focus lands on the next field; debounce the restore and cancel it on
   // focusin so hopping between fields (keyboard stays up) never yanks the page mid-transition.
   document.addEventListener('focusout', function(){
     if (restoreT) clearTimeout(restoreT);
-    restoreT = setTimeout(function(){ restoreT = null; setH(); }, 250);
+    restoreT = setTimeout(function(){ restoreT = null; kick(); }, 250);
   });
-  document.addEventListener('focusin', function(){ if (restoreT){ clearTimeout(restoreT); restoreT = null; } });
   document.addEventListener('DOMContentLoaded', setH);
 
   /* --- diagnostic overlay (?vvdebug=1): live viewport geometry to pinpoint the iOS keyboard
