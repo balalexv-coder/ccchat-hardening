@@ -46,6 +46,31 @@
   });
   document.addEventListener('focusin', function(){ if (restoreT){ clearTimeout(restoreT); restoreT = null; } });
   document.addEventListener('DOMContentLoaded', setH);
+
+  /* --- diagnostic overlay (?vvdebug=1): live viewport geometry to pinpoint the iOS keyboard
+         shift on-device. Read-only; not loaded unless explicitly requested. --- */
+  if (/[?&#]vvdebug/.test(location.search + location.hash)) {
+    document.addEventListener('DOMContentLoaded', function(){
+      var d = document.createElement('div');
+      d.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;background:rgba(180,0,0,.85);color:#fff;'+
+        'font:11px/1.35 monospace;padding:4px 6px;pointer-events:none;white-space:pre;max-width:100vw';
+      document.body.appendChild(d);
+      function upd(){
+        var b = document.body.getBoundingClientRect();
+        var a = document.activeElement;
+        d.textContent =
+          'sY='   + Math.round(window.scrollY) +
+          ' ih='  + Math.round(window.innerHeight) +
+          (vv ? (' vvH=' + Math.round(vv.height) + ' vvTop=' + Math.round(vv.offsetTop) + ' sc=' + vv.scale.toFixed(2)) : ' novv') +
+          '\nappH=' + (document.documentElement.style.getPropertyValue('--app-h')||'-') +
+          ' bTop=' + Math.round(b.top) + ' bBot=' + Math.round(b.bottom) +
+          ' ae=' + (a ? a.tagName : '-');
+      }
+      upd(); setInterval(upd, 300);
+      window.addEventListener('resize', upd);
+      if (vv){ vv.addEventListener('resize', upd); vv.addEventListener('scroll', upd); }
+    });
+  }
 })();
 </script>
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
