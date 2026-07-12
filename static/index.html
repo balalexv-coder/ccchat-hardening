@@ -66,8 +66,9 @@
 
   /* --- diagnostic overlay (?vvdebug=1): live viewport geometry to pinpoint the iOS keyboard
          shift on-device. Read-only; not loaded unless explicitly requested. --- */
-  var _lsdbg=''; try{ _lsdbg=localStorage.vvdebug||''; }catch(e){}
-  if (/[?&#]vvdebug/.test(location.search + location.hash) || _lsdbg==='1') {
+  /* TEMP: overlay unconditionally ON while diagnosing the prod keyboard gap (single-user app,
+     owner's request 2026-07-12). Revert to the flag check when done. */
+  if (true) {
     document.addEventListener('DOMContentLoaded', function(){
       var d = document.createElement('div');
       d.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;background:rgba(180,0,0,.85);color:#fff;'+
