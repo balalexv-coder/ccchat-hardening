@@ -219,7 +219,11 @@
   #installBtn{background:var(--accent);border:1px solid var(--accent);color:var(--on-accent);border-radius:6px;font-size:12px;font-weight:600;padding:3px 10px;cursor:pointer}
   body.hide-tools .tool,body.hide-tools .toolresult{display:none}
   #status{font-size:11px;color:var(--muted)}
-  #log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+  /* overflow-x MUST be pinned: with only overflow-y set, CSS computes overflow-x:auto, so any
+     over-wide child (e.g. a long KaTeX formula) makes the whole chat pan left-right on touch.
+     Wide content scrolls INSIDE its own block instead: pre, .md table, .katex-display below. */
+  #log{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .md .katex-display{overflow-x:auto;overflow-y:hidden;max-width:100%}
   #empty{margin:auto;color:var(--muted);text-align:center}
 
   .msg{max-width:85%;padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.45;white-space:pre-wrap;word-wrap:break-word}
