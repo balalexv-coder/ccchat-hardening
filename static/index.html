@@ -66,11 +66,11 @@
   });
   document.addEventListener('DOMContentLoaded', setH);
 
-  /* --- diagnostic overlay (?vvdebug=1): live viewport geometry to pinpoint the iOS keyboard
-         shift on-device. Read-only; not loaded unless explicitly requested. --- */
-  /* TEMP: overlay unconditionally ON while diagnosing the prod keyboard gap (single-user app,
-     owner's request 2026-07-12). Revert to the flag check when done. */
-  if (true) {
+  /* --- diagnostic overlay: live viewport geometry to pinpoint iOS keyboard shifts. Read-only,
+         off by default. Enable from the PWA with the /vvdebug composer command (toggles
+         localStorage.vvdebug), or via ?vvdebug=1 in a browser. --- */
+  var _lsdbg=''; try{ _lsdbg=localStorage.vvdebug||''; }catch(e){}
+  if (/[?&#]vvdebug/.test(location.search + location.hash) || _lsdbg==='1') {
     document.addEventListener('DOMContentLoaded', function(){
       var d = document.createElement('div');
       d.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;background:rgba(180,0,0,.85);color:#fff;'+
@@ -683,7 +683,7 @@
         <button id="micBtn" title="Voice input">🎤</button>
         <button id="attachBtn" title="Attach file">📎</button>
         <input id="fileInput" type="file" multiple style="display:none">
-        <textarea id="inp" rows="1" placeholder="Test… ( / for commands )"></textarea>
+        <textarea id="inp" rows="1" placeholder="Message… ( / for commands )"></textarea>
         <button id="send">→</button>
       </div>
     </div>
