@@ -66,7 +66,8 @@
 
   /* --- diagnostic overlay (?vvdebug=1): live viewport geometry to pinpoint the iOS keyboard
          shift on-device. Read-only; not loaded unless explicitly requested. --- */
-  if (/[?&#]vvdebug/.test(location.search + location.hash)) {
+  var _lsdbg=''; try{ _lsdbg=localStorage.vvdebug||''; }catch(e){}
+  if (/[?&#]vvdebug/.test(location.search + location.hash) || _lsdbg==='1') {
     document.addEventListener('DOMContentLoaded', function(){
       var d = document.createElement('div');
       d.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;background:rgba(180,0,0,.85);color:#fff;'+
@@ -1997,6 +1998,12 @@ cw.addEventListener('drop',e=>{e.preventDefault();cw.classList.remove('drag'); i
 
 function submit(){
   const t=inp.value.trim();
+  // local diagnostic toggle, reachable from the PWA (URL params aren't): /vvdebug flips the
+  // viewport-geometry overlay (see head bootstrap) and reloads. Never sent to the session.
+  if(t==='/vvdebug'){
+    try{ localStorage.vvdebug = (localStorage.vvdebug==='1') ? '' : '1'; }catch(e){}
+    inp.value=''; location.reload(); return;
+  }
   const ready=attached.filter(a=>a.path);
   // DIAGNOSTIC (user reports messages occasionally "swallowed" — pressed Send but nothing reaches the
   // console): log EVERY Send press with full context + the exact outcome, so a dropped message shows
