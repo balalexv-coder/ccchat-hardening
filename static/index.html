@@ -9,19 +9,42 @@
 <meta name="apple-mobile-web-app-title" content="ccchat">
 <script>
 /* iOS/standalone-PWA fix: 100dvh can "stick" after the soft keyboard opens/closes, leaving a black
-   void below the composer. Track the real visible height via visualViewport and drive body height
-   from it (see body{height:var(--app-h,...)}). */
+   void below the composer. Two parts:
+   1) track the real visible height via visualViewport and drive body height from it
+      (see body{height:var(--app-h,...)});
+   2) scroll restore — iOS often leaves the LAYOUT viewport scrolled up after the keyboard hides
+      (window.scrollY / vv.offsetTop stay non-zero), so the header slides off-screen and a dead
+      area remains below the composer even though --app-h is correct. When no text field is
+      focused and the user isn't pinch-zoomed, pull the page back to (0,0). */
 (function(){
   var vv = window.visualViewport;
+  var restoreT = null;
+  function maybeRestore(){
+    var a = document.activeElement;
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;  // keyboard in use
+    if (vv && Math.abs(vv.scale - 1) > 0.01) return;                       // pinch-zoomed: don't fight the user's pan
+    // keyboard inset (best-effort: in standalone PWA innerHeight may lag vv.height; the
+    // activeElement guard above is the primary signal, this is belt-and-suspenders)
+    var kb = vv ? (window.innerHeight - vv.height) : 0;
+    if (kb > 50) return;
+    if (window.scrollY > 0 || (vv && vv.offsetTop > 0)) window.scrollTo(0, 0);
+  }
   function setH(){
     var h = (vv && vv.height) || window.innerHeight;
     if (h) document.documentElement.style.setProperty('--app-h', h + 'px');
+    maybeRestore();
   }
   setH();
   window.addEventListener('resize', setH);
   window.addEventListener('orientationchange', function(){ setTimeout(setH, 200); });
   if (vv){ vv.addEventListener('resize', setH); vv.addEventListener('scroll', setH); }
-  document.addEventListener('focusout', function(){ setTimeout(setH, 100); });
+  // focusout fires BEFORE focus lands on the next field; debounce the restore and cancel it on
+  // focusin so hopping between fields (keyboard stays up) never yanks the page mid-transition.
+  document.addEventListener('focusout', function(){
+    if (restoreT) clearTimeout(restoreT);
+    restoreT = setTimeout(function(){ restoreT = null; setH(); }, 250);
+  });
+  document.addEventListener('focusin', function(){ if (restoreT){ clearTimeout(restoreT); restoreT = null; } });
   document.addEventListener('DOMContentLoaded', setH);
 })();
 </script>
