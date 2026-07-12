@@ -31,7 +31,9 @@
   }
   function setH(){
     var h = (vv && vv.height) || window.innerHeight;
-    if (h) document.documentElement.style.setProperty('--app-h', h + 'px');
+    if (h) document.documentElement.style.setProperty('--app-h', h + 'px');  // <html> exists in <head>
+    if (!document.body) return;  // called once from <head> before body is parsed — body-dependent work below
+
     // Anchor the app to the VISUAL viewport (measured on-device 2026-07-12): when the keyboard
     // opens, iOS does NOT scroll the layout viewport — it PANS the visual viewport down by the
     // keyboard height (vv.pageTop > 0, scrollY stays 0). Shrinking body to vv.height alone then
