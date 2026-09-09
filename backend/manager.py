@@ -23,6 +23,10 @@ from pathlib import Path
 from . import jsonstore, mounts_store, settings_store, userauth
 from .session import WIKI_LOAD_CMD
 
+# claude names each conversation transcript <session-uuid>.jsonl; anything else in that
+# directory (agent-*.jsonl subagent logs, journal.jsonl) is not a resumable conversation.
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
 STATE_FILE = Path(os.environ.get("CCCHAT_STATE", "/state/sessions.json"))
 # Guards the read-modify-write of the session state file (create/update/delete) against concurrent
 # writers (multiple requests, the reaper) clobbering each other's change. See backend/jsonstore.py.
@@ -415,7 +419,7 @@ class Manager:
         if oauth_token:
             env += ["-e", f"CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"]
         # long-lived container; we exec claude into it on demand.
-        _docker("run", "-d", "--name", cname, "--restart", "unless-stopped",
+        _docker("run", "-d", "--name", cname, "--init", "--restart", "unless-stopped",
                 "--network", net, *limits, *env, "-w", "/workspace",
                 *vols, SESSION_IMAGE, "sleep", "infinity")
 
@@ -875,6 +879,38 @@ class Manager:
         except Exception:
             pass
 
+    def _pinned_session_id(self, sess: dict) -> str:
+        """UUID of the claude conversation to resume, pinned per session.
+
+        "" for a session that never ran (a fresh start is correct there). Otherwise the pin file
+        wins; if it is missing or names a transcript that is gone, one is adopted and pinned.
+
+        Adoption takes the LARGEST transcript, not the newest: the bug being fixed here is exactly
+        a stray empty session shadowing a real history, and such a stray is always the newest and
+        the smallest. Only UUID-named files are candidates — that rules out agent-*.jsonl
+        (subagent transcripts) and stray files like journal.jsonl.
+        """
+        pin = self.local_ws(sess) / ".chome" / ".ccchat-session-id"
+        try:
+            proj = self.local_ws(sess) / ".chome" / "projects"
+            found = {p.stem: p for p in proj.rglob("*.jsonl") if _UUID_RE.match(p.stem)}
+        except Exception:
+            return ""
+        try:
+            rid = pin.read_text(encoding="utf-8").strip()
+        except Exception:
+            rid = ""
+        if rid in found:
+            return rid
+        if not found:
+            return ""
+        rid = max(found.values(), key=lambda p: p.stat().st_size).stem
+        try:
+            pin.write_text(rid, encoding="utf-8")
+        except Exception:
+            pass
+        return rid
+
     def ensure_claude(self, sess: dict):
         """Ensure an interactive claude is running inside a tmux session in the container.
         tmux gives claude a real TTY; we send input via `tmux send-keys` (no pty-in-pty).
@@ -923,8 +959,13 @@ class Manager:
         # instead. Plain-text questions render through the normal JSONL path (correct order, in the
         # transcript, survive reload) — sidestepping the tmux-scraped choice widget entirely.
         no_aq = " --disallowedTools AskUserQuestion"
-        launch = (f"claude --dangerously-skip-permissions{no_aq}{sp_arg} -c 2>/dev/null || "
-                  f"claude --dangerously-skip-permissions{no_aq}{sp_arg}")
+        # Resume by a PINNED session id, never by "most recent". `-c` used to fall through to a
+        # fresh session on any hiccup (its stderr was swallowed); that empty session then became
+        # the newest transcript and shadowed the real history for good. The pin lives in .chome,
+        # so it survives a container recreate and a stray empty session can never take over.
+        rid = self._pinned_session_id(sess)
+        base = f"claude --dangerously-skip-permissions{no_aq}{sp_arg}"
+        launch = f"{base} --resume {rid} 2>/dev/null || {base}" if rid else base
         _docker("exec", "-e", "IS_SANDBOX=1", c, "tmux", "new-session", "-d", "-s", "main",
                 "-x", "200", "-y", "50", "bash", "-lc", f"cd /workspace && {launch}")
         # enable mouse-wheel scrolling in terminal mode (forwards wheel to the TUI / enters copy-mode

@@ -1382,7 +1382,7 @@ async function loadAdminSessions(){
     ? `${nRun} running · ${fmtMem(totMem)} RAM total`
     : 'no sessions';
 }
-function startSessPoll(){ if(_sessPoll)return; loadAdminSessions(); _sessPoll=setInterval(loadAdminSessions,5000); }
+function startSessPoll(){ if(_sessPoll)return; loadAdminSessions(); _sessPoll=setInterval(loadAdminSessions,30000); }
 function stopSessPoll(){ if(_sessPoll){ clearInterval(_sessPoll); _sessPoll=null; } }
 async function doReap(dry){
   const hours=parseFloat($('reapHours').value||'0');
