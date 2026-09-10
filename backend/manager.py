@@ -89,8 +89,21 @@ def _save(d: dict):
     jsonstore.save(STATE_FILE, d)
 
 
-def _docker(*args, timeout=60) -> subprocess.CompletedProcess:
-    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+def _docker(*args, timeout=60, tolerate_timeout=False) -> subprocess.CompletedProcess:
+    """Run a docker CLI command.
+
+    tolerate_timeout=True returns a failed result (rc 124) instead of raising. Container lifecycle
+    ops need this: on a loaded host `docker rm -f` can outlast the deadline while still completing
+    server-side, and a raised TimeoutExpired between the rm and the run in _start_container left
+    the session with no container at all, recoverable only by someone reopening the chat.
+    """
+    try:
+        return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if not tolerate_timeout:
+            raise
+        return subprocess.CompletedProcess(args=["docker", *args], returncode=124, stdout="",
+                                           stderr=f"docker {args[0]} timed out after {timeout}s")
 
 
 def _ttyd_secret() -> str:
@@ -129,6 +142,10 @@ def code_token(sid: str) -> str:
 
 
 class Manager:
+    # Deadline, in seconds, for container create/remove. Generous on purpose: these run on a host
+    # that may be heavily loaded, and overrunning it mid-recreate is what breaks a session.
+    LIFECYCLE_TIMEOUT = 180
+
     def __init__(self):
         self._cli_versions = {}   # image id -> Claude CLI version (exec'd once per image)
         # Per-container locks serialising lifecycle ops (start/stop/recreate). Endpoints run in the
@@ -299,8 +316,17 @@ class Manager:
 
     def _start_container(self, sess: dict):
         cname = sess["container"]
-        # remove stale container with same name if any
-        _docker("rm", "-f", cname)
+        # Remove any stale container with this name, then WAIT for the name to actually free up.
+        # A slow `docker rm -f` is not fatal (it completes server-side even if we stop waiting),
+        # but firing `docker run` before the name is released fails with name-already-in-use --
+        # and by that point the old container is gone for good.
+        _docker("rm", "-f", cname, timeout=self.LIFECYCLE_TIMEOUT, tolerate_timeout=True)
+        deadline = time.time() + self.LIFECYCLE_TIMEOUT
+        while time.time() < deadline:
+            if _docker("inspect", "-f", "{{.Id}}", cname,
+                       timeout=20, tolerate_timeout=True).returncode != 0:
+                break
+            time.sleep(1)
         slug = self._slug(sess)
         # Auth path A: a long-lived `claude setup-token` (CLAUDE_CODE_OAUTH_TOKEN) — injected as env,
         # no per-user seed / refresh dance. Path B (no token): seed .credentials.json from the user's
@@ -419,9 +445,20 @@ class Manager:
         if oauth_token:
             env += ["-e", f"CLAUDE_CODE_OAUTH_TOKEN={oauth_token}"]
         # long-lived container; we exec claude into it on demand.
-        _docker("run", "-d", "--name", cname, "--init", "--restart", "unless-stopped",
-                "--network", net, *limits, *env, "-w", "/workspace",
-                *vols, SESSION_IMAGE, "sleep", "infinity")
+        # Point of no return: the old container is already gone, so a transient failure here would
+        # leave the session with nothing. Retry, and judge success by the container state rather
+        # than the exit code -- a `run` that overran its deadline may have created it anyway.
+        err = ""
+        for _attempt in range(3):
+            r = _docker("run", "-d", "--name", cname, "--init", "--restart", "unless-stopped",
+                        "--network", net, *limits, *env, "-w", "/workspace",
+                        *vols, SESSION_IMAGE, "sleep", "infinity",
+                        timeout=self.LIFECYCLE_TIMEOUT, tolerate_timeout=True)
+            if self.status(sess) != "missing":
+                return
+            err = (r.stderr or "").strip()[:200]
+            _docker("rm", "-f", cname, timeout=self.LIFECYCLE_TIMEOUT, tolerate_timeout=True)
+        raise RuntimeError(f"could not create container {cname} after 3 attempts: {err}")
 
     def status(self, sess: dict) -> str:
         """'running' | 'stopped' | 'missing' — independent of whether we read its transcript."""
