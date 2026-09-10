@@ -597,7 +597,12 @@ class Manager:
     def _container_states(self) -> dict:
         """container name -> docker state ('running','exited',…) for ALL containers, one call.
         A name absent from the map means the container doesn't exist ('missing')."""
-        r = _docker("ps", "-a", "--format", "{{.Names}}\t{{.State}}", timeout=15)
+        # `docker ps -a` over this many containers measured 18-23s on a starved host, so the
+        # old 15s deadline never held and every reaper sweep died on it. Tolerate a timeout
+        # rather than raise: reap_idle treats an unknown container as not-running and skips it,
+        # so a slow host costs a sweep, never a wrong stop.
+        r = _docker("ps", "-a", "--format", "{{.Names}}\t{{.State}}",
+                    timeout=self.LIFECYCLE_TIMEOUT, tolerate_timeout=True)
         out = {}
         if r.returncode == 0:
             for line in r.stdout.splitlines():
@@ -645,8 +650,16 @@ class Manager:
 
     def _pane_busy(self, sess: dict) -> bool:
         """True if claude is actively working right now (pane shows the interrupt hint). Used as a
-        safety guard so reaping never stops a session mid-task even if its transcript looks idle."""
-        r = _docker("exec", sess["container"], "tmux", "capture-pane", "-t", "main", "-p", timeout=8)
+        safety guard so reaping never stops a session mid-task even if its transcript looks idle.
+
+        Fails CLOSED -- a probe that does not come back cleanly reports busy. Reading an empty
+        stdout as idle would let a slow or wedged `docker exec` hand the reaper a green light to
+        stop a session in the middle of a task.
+        """
+        r = _docker("exec", sess["container"], "tmux", "capture-pane", "-t", "main", "-p",
+                    timeout=30, tolerate_timeout=True)
+        if r.returncode != 0:
+            return True
         return "esc to interrupt" in (r.stdout or "").lower()
 
     def admin_overview(self) -> list:

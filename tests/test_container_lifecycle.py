@@ -86,3 +86,29 @@ def test_never_ran_yields_empty_so_a_fresh_start_is_used(tmp_path, monkeypatch):
     _proj(tmp_path)
     m = _mgr(tmp_path, monkeypatch)
     assert m._pinned_session_id({}) == ""
+
+
+def _fake_docker(rc, out=""):
+    return lambda *a, **k: subprocess.CompletedProcess(args=a, returncode=rc, stdout=out, stderr="")
+
+
+def test_pane_busy_fails_closed_when_the_probe_fails(monkeypatch):
+    """A probe that times out must NOT read as idle -- that would green-light a mid-task stop."""
+    monkeypatch.setattr(M, "_docker", _fake_docker(124))
+    assert Manager.__new__(Manager)._pane_busy({"container": "c"}) is True
+
+
+def test_pane_busy_true_on_the_interrupt_hint(monkeypatch):
+    monkeypatch.setattr(M, "_docker", _fake_docker(0, "  building... (esc to interrupt)"))
+    assert Manager.__new__(Manager)._pane_busy({"container": "c"}) is True
+
+
+def test_pane_busy_false_only_on_a_clean_idle_pane(monkeypatch):
+    monkeypatch.setattr(M, "_docker", _fake_docker(0, "> "))
+    assert Manager.__new__(Manager)._pane_busy({"container": "c"}) is False
+
+
+def test_container_states_survives_a_timeout(monkeypatch):
+    """A slow `docker ps -a` costs a sweep, not an exception: reap_idle then skips every session."""
+    monkeypatch.setattr(M, "_docker", _fake_docker(124))
+    assert Manager.__new__(Manager)._container_states() == {}
