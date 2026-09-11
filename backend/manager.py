@@ -8,6 +8,7 @@ Why a workspace mounted on the HOST: ccchat reads the session JSONL transcript d
 host path (no docker exec needed for output), and the session container writes there. Input goes
 into the container's interactive claude via `docker exec` into a pty.
 """
+import datetime
 import hashlib
 import hmac
 import json
@@ -516,30 +517,55 @@ class Manager:
             time.sleep(0.4)
         return False
 
-    def ensure_ttyd(self, sess: dict, theme: str = "dark"):
-        """Run ttyd inside the session container, attached to the SAME tmux 'main' that claude runs
-        in. ttyd's xterm theme is baked at launch, so if a different theme is requested we relaunch
-        it (the slim image lacks pgrep/ps/pkill — use pidof + kill)."""
+    TTYD_PORT = 7681
+
+    def ensure_ttyd(self, sess: dict, theme: str = "dark") -> bool:
+        """Run ttyd inside the session container, attached to the SAME tmux session (main) that
+        claude runs in. The xterm theme is baked in at launch, so a request for a different theme
+        relaunches it (the slim image lacks pgrep/ps/pkill -- use pidof + kill).
+
+        Liveness is judged by asking ttyd for a page USING THE CREDENTIAL FOR THIS SESSION, not by
+        `pidof ttyd`: a stale instance started with a different credential answers pidof happily
+        and then 401s every terminal request, which reads as a broken terminal on a healthy
+        container. Returns only once ttyd actually serves, so a caller never hands out an IP that
+        is about to 404 or 401.
+        """
         c = sess["container"]
         theme = theme if theme in self._TTYD_THEME else "dark"
-        up = "up" in (_docker("exec", c, "sh", "-c",
-                              "pidof ttyd >/dev/null 2>&1 && echo up || echo down").stdout or "")
-        # remember which theme the running ttyd was started with (marker file)
-        cur = (_docker("exec", c, "sh", "-c", "cat /tmp/.ttyd_theme 2>/dev/null").stdout or "").strip()
-        if up and cur == theme:
-            return
-        if up:                                   # wrong theme — kill so we relaunch
-            _docker("exec", c, "sh", "-c", "kill $(pidof ttyd) 2>/dev/null; sleep 0.3")
-        _docker("exec", c, "sh", "-c", f"echo {theme} > /tmp/.ttyd_theme")
-        # -W writable; bind on the web net but require per-session basic auth (review #6) so another
-        # container on the shared network can't open an unauthenticated root shell. The proxy
-        # (app.term_*) supplies the same credential derived from sid.
         user, pwd = ttyd_credential(sess["id"])
-        _docker("exec", "-d", c, "ttyd", "-p", "7681", "-i", "0.0.0.0", "-W",
+
+        def answers() -> bool:
+            r = _docker("exec", c, "sh", "-c",
+                        f"curl -sf -u {user}:{pwd} http://127.0.0.1:{self.TTYD_PORT}/ "
+                        f">/dev/null 2>&1 && echo ok || echo no",
+                        timeout=30, tolerate_timeout=True)
+            return "ok" in (r.stdout or "")
+
+        cur = (_docker("exec", c, "sh", "-c", "cat /tmp/.ttyd_theme 2>/dev/null",
+                       timeout=30, tolerate_timeout=True).stdout or "").strip()
+        if cur == theme and answers():
+            return True
+        # Wrong theme, wrong credential, or wedged -- take it down and start a known-good one.
+        _docker("exec", c, "sh", "-c", "kill $(pidof ttyd) 2>/dev/null; sleep 0.3",
+                timeout=30, tolerate_timeout=True)
+        _docker("exec", c, "sh", "-c", f"echo {theme} > /tmp/.ttyd_theme",
+                timeout=30, tolerate_timeout=True)
+        # -W writable; bind on the web net but require per-session basic auth (review #6) so another
+        # container on the shared network cannot open an unauthenticated root shell. The proxy
+        # (app.term_*) supplies the same credential derived from sid.
+        _docker("exec", "-d", c, "ttyd", "-p", str(self.TTYD_PORT), "-i", "0.0.0.0", "-W",
                 "-c", f"{user}:{pwd}",
                 "-t", f"theme={self._TTYD_THEME[theme]}",
-                "tmux", "attach", "-t", "main")
-
+                "tmux", "attach", "-t", "main",
+                timeout=30, tolerate_timeout=True)
+        # `docker exec -d` returns before ttyd binds; on a starved host that gap is seconds, and a
+        # terminal request landing in it 404s. Wait for it, the way ensure_code does.
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if answers():
+                return True
+            time.sleep(0.5)
+        return False
     @staticmethod
     def _session_net(sess: dict) -> str:
         return SESSION_NET
@@ -639,15 +665,53 @@ class Manager:
                     pass
         return out
 
+    @staticmethod
+    def _tail_timestamp(p) -> float:
+        """Epoch secs of the last entry in a JSONL that carries a timestamp, else 0.0.
+
+        Only the tail is read -- these transcripts reach tens of MB and this runs per session on
+        every reaper sweep.
+        """
+        try:
+            size = p.stat().st_size
+            if not size:
+                return 0.0
+            with open(p, "rb") as f:
+                f.seek(max(0, size - 65536))
+                tail = f.read().decode("utf-8", "replace").splitlines()
+            for line in reversed(tail):
+                try:
+                    ts = json.loads(line).get("timestamp")
+                except Exception:
+                    continue
+                if ts:
+                    return datetime.datetime.fromisoformat(
+                        ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+        return 0.0
+
     def _last_activity(self, sess: dict) -> float:
-        """Newest transcript mtime (epoch secs) for this session, 0 if none. Claude appends to the
-        JSONL as it works (tool calls, results), so this tracks real activity, not just user input."""
+        """Epoch secs of the newest real transcript entry for this session, 0 if none.
+
+        Reads the timestamp INSIDE the JSONL, not the mtime of the file. The hourly backup touches
+        these files, so mtime reported every session as freshly active and the reaper never fired
+        on the ones that mattered -- measured 0.9h against a true 31h idle. Claude appends as it
+        works (tool calls, results), so the last entry tracks real activity, not just user input.
+
+        Falls back to mtime for a file whose tail yields no timestamp: that overstates activity,
+        which keeps the session alive rather than reaping one we failed to read.
+        """
+        newest = 0.0
         try:
             proj = self.local_ws(sess) / ".chome" / "projects"
-            return max((p.stat().st_mtime for p in proj.rglob("*.jsonl")), default=0)
+            for p in proj.rglob("*.jsonl"):
+                ts = self._tail_timestamp(p) or p.stat().st_mtime
+                if ts > newest:
+                    newest = ts
         except Exception:
             return 0
-
+        return newest
     def _pane_busy(self, sess: dict) -> bool:
         """True if claude is actively working right now (pane shows the interrupt hint). Used as a
         safety guard so reaping never stops a session mid-task even if its transcript looks idle.

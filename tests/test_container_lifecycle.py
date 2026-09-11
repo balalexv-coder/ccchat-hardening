@@ -6,7 +6,11 @@ Two failure modes are covered here, both seen in production:
   * `claude -c` falling through to a fresh session, whose empty transcript then shadowed the real
     history because it was the newest.
 """
+import datetime
+import json
+import os
 import subprocess
+import time
 
 import pytest
 
@@ -112,3 +116,69 @@ def test_container_states_survives_a_timeout(monkeypatch):
     """A slow `docker ps -a` costs a sweep, not an exception: reap_idle then skips every session."""
     monkeypatch.setattr(M, "_docker", _fake_docker(124))
     assert Manager.__new__(Manager)._container_states() == {}
+
+
+# ---- ttyd liveness ------------------------------------------------------------------------------
+
+def _ttyd_docker(probe_results, calls):
+    """Fake _docker: theme marker reads back as dark, curl probes follow probe_results."""
+    it = iter(probe_results)
+
+    def fake(*a, **k):
+        calls.append(" ".join(str(x) for x in a))
+        cmd = " ".join(str(x) for x in a)
+        if "cat /tmp/.ttyd_theme" in cmd:
+            return subprocess.CompletedProcess(a, 0, "dark", "")
+        if "curl -sf" in cmd:
+            return subprocess.CompletedProcess(a, 0, next(it), "")
+        return subprocess.CompletedProcess(a, 0, "", "")
+    return fake
+
+
+def _sess():
+    return {"container": "c", "id": "sid"}
+
+
+def test_ensure_ttyd_leaves_a_healthy_one_alone(monkeypatch):
+    calls = []
+    monkeypatch.setattr(M, "_docker", _ttyd_docker(["ok"], calls))
+    assert Manager.__new__(Manager).ensure_ttyd(_sess(), "dark") is True
+    assert not any("-d c ttyd" in c for c in calls), "must not relaunch a working ttyd"
+
+
+def test_ensure_ttyd_replaces_one_that_rejects_our_credential(monkeypatch):
+    """A stale ttyd on a different credential satisfies pidof but 401s every request."""
+    calls = []
+    monkeypatch.setattr(M, "_docker", _ttyd_docker(["no", "ok"], calls))
+    assert Manager.__new__(Manager).ensure_ttyd(_sess(), "dark") is True
+    assert any("kill $(pidof ttyd)" in c for c in calls), "stale instance must be killed"
+    assert any("ttyd -p 7681" in c for c in calls), "a fresh ttyd must be launched"
+
+
+# ---- idle metric --------------------------------------------------------------------------------
+
+def _jsonl(path, stamp):
+    path.write_text(json.dumps({"type": "assistant", "timestamp": stamp}) + "\n", encoding="utf-8")
+
+
+def test_last_activity_reads_the_transcript_not_the_mtime(tmp_path, monkeypatch):
+    """The hourly backup touches these files; mtime then reports every session as just-active."""
+    proj = tmp_path / ".chome" / "projects" / "-workspace"
+    proj.mkdir(parents=True)
+    p = proj / "aebd60e0-8e1a-4a4f-8462-8b46dfd9e840.jsonl"
+    _jsonl(p, "2026-09-01T00:00:00.000Z")
+    os.utime(p, (time.time(), time.time()))          # backup touches it -> mtime is now
+    monkeypatch.setattr(Manager, "local_ws", lambda self, sess: tmp_path)
+    got = Manager.__new__(Manager)._last_activity({})
+    expected = datetime.datetime(2026, 9, 1, tzinfo=datetime.timezone.utc).timestamp()
+    assert abs(got - expected) < 2, "must report the entry time, not the touched mtime"
+
+
+def test_last_activity_falls_back_to_mtime_when_unreadable(tmp_path, monkeypatch):
+    """No parsable timestamp -> overstate activity rather than reap a session we cannot read."""
+    proj = tmp_path / ".chome" / "projects" / "-workspace"
+    proj.mkdir(parents=True)
+    p = proj / "junk.jsonl"
+    p.write_text("not json at all\n", encoding="utf-8")
+    monkeypatch.setattr(Manager, "local_ws", lambda self, sess: tmp_path)
+    assert abs(Manager.__new__(Manager)._last_activity({}) - p.stat().st_mtime) < 2
