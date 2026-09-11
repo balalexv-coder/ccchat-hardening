@@ -11,7 +11,10 @@ DEPLOY="$SRC/deploy.sh"
 
 git -C "$SRC" fetch -q origin dev main 2>/dev/null || { echo "$(date -Is) fetch failed"; exit 0; }
 
-for pair in "dev:dev" "main:prod"; do
+# The dev environment was retired on 2026-09-11: ccchat-dev (sessions.balalexv.tech) is stopped,
+# its Caddy route is gone, and everything runs on prod. Leaving dev in this loop would rebuild the
+# image and start that container again on the next push to origin/dev.
+for pair in "main:prod"; do
   branch="${pair%%:*}"; envn="${pair##*:}"
   remote_sha="$(git -C "$SRC" rev-parse "origin/$branch" 2>/dev/null)" || continue
   state="/root/.ccchat-deployed-$envn"
