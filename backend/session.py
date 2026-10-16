@@ -34,6 +34,22 @@ WIKI_LOAD_CMD = (
 )
 
 
+# The pane scrape (`docker exec ... tmux capture-pane`) costs a process in the container and work for the docker
+# daemon each time. It is needed often only while something happens: a turn running (the Thinking pill), input just
+# sent, the transcript growing (a choice widget or a blocking prompt shows up mid-turn). An open but quiet session is
+# looked at every IDLE_POLL_S instead of every BUSY_POLL_S.
+PUMP_TICK_S = 0.4
+BUSY_POLL_S = 2.0
+IDLE_POLL_S = 15.0
+ACTIVE_WINDOW_S = 60.0
+
+
+def pane_poll_ticks(pill_on: bool, last_activity: float, now: float) -> int:
+    """Pump ticks between two pane scrapes: often while a turn runs or something happened in the last minute."""
+    hot = pill_on or (now - last_activity) < ACTIVE_WINDOW_S
+    return max(1, round((BUSY_POLL_S if hot else IDLE_POLL_S) / PUMP_TICK_S))
+
+
 class Session:
     def __init__(self, sess: dict, local_ws: Path, wiki: str = ""):
         self.sess = sess
@@ -66,6 +82,8 @@ class Session:
         self._answered_choices = set()      # ids answered (via web) but whose widget still lingers in
                                             # the pane — suppress re-emit until it clears (no stale dup)
         self._await_done = False            # a turn was sent; watchdog should emit done when idle
+        self._last_activity = time.time()   # input sent or the transcript grew: the pane is polled often
+        self._jsonl_mtime = 0.0                # the active transcript's mtime last seen by the pump
         self._hidden_tool_ids = set()       # tool_use ids whose tool_result must be hidden too
         self._tasks_mtime = 0               # newest mtime in the tasks/ snapshot dir we've emitted
                                             # (ToolSearch + ask_user_choice: rendered as buttons / noise)
@@ -181,6 +199,7 @@ class Session:
         await loop.run_in_executor(None, lambda: _docker(
             "exec", self.container, "tmux", "send-keys", "-t", "main", "Enter"))
         self._await_done = True   # expect this turn to finish → watchdog closes the indicator
+        self._last_activity = time.time()
 
     async def send_wiki(self, text: str):
         """Re-load the wiki after a compaction/clear by telling claude to READ the mounted wiki.md
@@ -711,7 +730,16 @@ class Session:
                 # in the pane mid-turn. This also closes commands that never write turn_duration
                 # (e.g. /clear, /context); the real turn end still arrives immediately via turn_duration.
                 tick += 1
-                if tick % 5 == 0:  # ~every 2s
+                jp = self.jsonl_path
+                if jp:
+                    try:
+                        mt = os.path.getmtime(jp)
+                    except OSError:
+                        mt = 0.0
+                    if mt and mt != self._jsonl_mtime:
+                        self._jsonl_mtime = mt
+                        self._last_activity = time.time()
+                if tick % pane_poll_ticks(self._pill_on, self._last_activity, time.time()) == 0:
                     pane = await asyncio.get_event_loop().run_in_executor(None, self._pane)
                     # SINGLE SOURCE OF TRUTH for the "Thinking" pill: claude's real pane state. The pill
                     # is ON whenever the console is busy ("esc to interrupt" present) and OFF once it's
