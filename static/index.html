@@ -1817,7 +1817,8 @@ const toolVerb={Bash:'Running command',Read:'Reading file',Edit:'Editing',Write:
 const BLOCK_MSG={
   auth:'⚠ Authentication problem — set or refresh your Claude token in Settings (⚙).',
   rate_limit:'⚠ Usage / rate limit reached — try again later.',
-  workspace_trust:'⚠ Workspace-trust prompt is blocking the session.'
+  workspace_trust:'⚠ Workspace-trust prompt is blocking the session.',
+  claude_down:'⚠ Claude is not running in this session; restarting it — your message is queued.'
 };
 function showBlocker(reason){
   const b=$('blocker');

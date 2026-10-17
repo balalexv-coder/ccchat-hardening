@@ -747,6 +747,7 @@ def _live(email: str, sid: str) -> Session:
         # The old approach typed a "READ the wiki" instruction the model could skip/fake, and the
         # content lived in Messages so it was lost on each compaction.
         s.on_notify = _session_notify   # fire push on done/blocked/choice (works with the tab closed)
+        s.on_revive = lambda: mgr.ensure_running(sess)   # claude died in a running container: start it
         LIVE[sid] = s
     # Start the transcript pump only when there's a running event loop. _live() is called from
     # BOTH sync endpoints (/commands, /status) and the async ws handler; creating the task in a

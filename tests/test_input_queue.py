@@ -19,6 +19,7 @@ def test_input_queue_holds_until_idle_then_delivers_in_order(tmp_path):
 
     s._wait_ready = fake_ready
     s._do_send = fake_do_send
+    s._claude_alive = lambda: True
     s._pane = lambda: "● working… esc to interrupt" if state["busy"] else "❯ idle prompt"
 
     async def run():
@@ -45,6 +46,7 @@ def test_input_delivered_immediately_when_idle(tmp_path):
 
     s._wait_ready = fake_ready
     s._do_send = fake_do_send
+    s._claude_alive = lambda: True
     s._pane = lambda: "❯ idle prompt"      # already idle: no added latency
 
     async def run():

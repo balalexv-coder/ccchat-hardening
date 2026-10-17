@@ -67,6 +67,8 @@ class Session:
         self._drainer = None       # background task draining _inq (never type into a mid-turn pane)
         self._pill_on = False      # client "Thinking" pill state (pane-driven; set by any busy emit)
         self.on_compact = None     # async callback set by app: re-send wiki after a compaction
+        self.on_revive = None      # sync callback set by app: start claude again (Manager.ensure_running)
+                                   # when its tmux session is gone while the container still runs
         self.on_notify = None      # sync callback set by app: fire a push notification on
                                    # done / blocked / choice (server-side, so it works when the
                                    # browser/phone is closed). Called as on_notify(self.sess, ev).
@@ -133,11 +135,46 @@ class Session:
         if self._drainer is None or self._drainer.done():
             self._drainer = asyncio.create_task(self._drain_inputs())
 
+    REVIVE_RETRY_S = 15
+
+    def _claude_alive(self) -> bool:
+        try:
+            return _docker("exec", self.container, "tmux", "has-session", "-t", "main",
+                           timeout=8).returncode == 0
+        except Exception:
+            return False
+
+    async def _ensure_claude(self) -> bool:
+        """Whether claude runs in the pane, starting it again through on_revive when it does not.
+        Without this a container whose claude died (e.g. the host ran out of memory while it started)
+        took every message and typed it into nothing: no tmux, no answer, no error."""
+        import logging
+        log = logging.getLogger("uvicorn.error")
+        loop = asyncio.get_event_loop()
+        if await loop.run_in_executor(None, self._claude_alive):
+            return True
+        log.warning("[drain %s] claude is not running: starting it again", self.container)
+        if self.on_revive:
+            try:
+                await loop.run_in_executor(None, self.on_revive)
+            except Exception:
+                log.exception("[drain %s] could not start claude", self.container)
+            if await loop.run_in_executor(None, self._claude_alive):
+                return True
+        if self._block_reason != "claude_down":
+            self._block_reason = "claude_down"      # the pump clears it once the pane reads normal
+            for q in list(self._subscribers):
+                q.put_nowait({"kind": "blocked", "reason": "claude_down"})
+        return False
+
     async def _drain_inputs(self):
         """Deliver queued messages one at a time, each only when claude is idle, in FIFO order."""
         import logging
         while self._inq and self._alive:
             text = self._inq[0]
+            if not await self._ensure_claude():
+                await asyncio.sleep(self.REVIVE_RETRY_S)   # the message stays queued
+                continue
             try:
                 await self._wait_ready()
                 await self._wait_idle()
